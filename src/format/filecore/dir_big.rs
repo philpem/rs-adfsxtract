@@ -61,6 +61,21 @@ fn resolve_big_sin(
 pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> Result<BigDirDecodeResult> {
     let mut anomalies = Vec::new();
 
+    if data.len() < HEADER_FIXED_SIZE {
+        // Every fixed-header field below is read by direct offset; a
+        // resolved extent shorter than the header itself (e.g. a
+        // subdirectory whose zone-map fragment is smaller than what its
+        // own `BigDirSize`/`BigDirEntries` fields would imply - these are
+        // two independently-sourced numbers and nothing guarantees they
+        // agree on a corrupted disc) has nothing safe to parse. Report it
+        // as broken instead of indexing past the end of `data`.
+        anomalies.push(format!(
+            "directory data too short to contain a header: expected at least {HEADER_FIXED_SIZE} bytes, got {}",
+            data.len()
+        ));
+        return Ok(BigDirDecodeResult { is_broken: true, anomalies, ..Default::default() });
+    }
+
     let start_seq = data[0];
     let start_name_ok = &data[4..8] == START_NAME;
     if !start_name_ok {
@@ -179,4 +194,32 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
         check_byte_ok,
         anomalies,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::filecore::disc_record::parse_disc_record;
+    use crate::format::filecore::map_new::NewMapIndex;
+
+    #[test]
+    fn truncated_buffer_is_reported_broken_not_panicked() {
+        // Shorter than HEADER_FIXED_SIZE - every header field below is read
+        // by direct offset, so this must not panic.
+        let short = vec![0u8; 10];
+        let dr = parse_disc_record(&[0u8; 60]).unwrap();
+        let new_map = NewMapIndex::empty_for_test(dr);
+        let result = decode_big_dir(&short, &new_map, 0).unwrap();
+        assert!(result.is_broken);
+        assert!(result.objects.is_empty());
+        assert!(!result.anomalies.is_empty());
+    }
+
+    #[test]
+    fn empty_buffer_is_reported_broken_not_panicked() {
+        let dr = parse_disc_record(&[0u8; 60]).unwrap();
+        let new_map = NewMapIndex::empty_for_test(dr);
+        let result = decode_big_dir(&[], &new_map, 0).unwrap();
+        assert!(result.is_broken);
+    }
 }

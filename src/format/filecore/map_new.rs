@@ -203,6 +203,20 @@ impl NewMapIndex {
     pub fn extents_for(&self, fragment_id: u32) -> Option<&[Extent]> {
         self.fragment_index.get(&fragment_id).map(|v| v.as_slice())
     }
+
+    /// A fragment-less index, for tests in sibling modules (e.g. `dir_big`)
+    /// that need *a* `NewMapIndex` to call into but don't exercise fragment
+    /// resolution - `fragment_index` has no public constructor otherwise.
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(dr: DiscRecord) -> Self {
+        Self {
+            map_addr: 0,
+            zone_check_ok: Vec::new(),
+            cross_check_xor: 0,
+            zone0_disc_record: dr,
+            fragment_index: HashMap::new(),
+        }
+    }
 }
 
 /// Resolves a 3-byte SIN (fragment ID in bits 8-23, sharing offset in bits

@@ -177,10 +177,18 @@ pub fn decode_dir(
     let mut anomalies = Vec::new();
     let expected_len = if small { SMALL_DIR_SIZE } else { LARGE_DIR_SIZE };
     if data.len() < expected_len {
+        // Every offset below (header, entries, tail) assumes a
+        // full-size buffer; a resolved extent shorter than that - a
+        // corrupted fragment, a directory whose zone-map allocation
+        // doesn't match its structural size - means there's nothing
+        // safe to parse. Report it as broken rather than indexing past
+        // the end of `data`, which would panic and abort the whole
+        // extraction instead of just this one directory.
         anomalies.push(format!(
             "directory data truncated: expected {expected_len} bytes, got {}",
             data.len()
         ));
+        return Ok(DirDecodeResult { is_broken: true, anomalies, ..Default::default() });
     }
 
     let header_seq = data[0];
@@ -349,5 +357,24 @@ mod tests {
         let (name, attrs) = decode_name(&raw, true);
         assert_eq!(name, "Fred");
         assert_eq!(attrs, ATTR_OWNER_READ | ATTR_OWNER_WRITE | ATTR_LOCKED);
+    }
+
+    #[test]
+    fn truncated_buffer_is_reported_broken_not_panicked() {
+        // A resolved extent shorter than the format's structural size (a
+        // corrupted fragment, or a subdirectory whose zone-map allocation
+        // came up short) must not panic - every offset in the real parse
+        // path assumes a full-size buffer.
+        let short = vec![0u8; 10];
+        let result = decode_dir(&short, true, MapType::Old, None, 0, None).unwrap();
+        assert!(result.is_broken);
+        assert!(result.objects.is_empty());
+        assert!(!result.anomalies.is_empty());
+    }
+
+    #[test]
+    fn empty_buffer_is_reported_broken_not_panicked() {
+        let result = decode_dir(&[], false, MapType::New, None, 0, None).unwrap();
+        assert!(result.is_broken);
     }
 }
