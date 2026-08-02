@@ -376,3 +376,41 @@ fn dfs_broken_entry_fail_policy_aborts() {
     let result = walk_and_extract(&mut fs, &opts, &mut log);
     assert!(result.is_err(), "Fail policy should abort on an out-of-bounds DFS entry");
 }
+
+#[test]
+fn dangerous_name_does_not_escape_output_directory() {
+    // A name field of "//" translates to ".." via the DOSFS '/'->'.' swap.
+    // Nothing in the on-disk format forbids this; a corrupted or crafted
+    // image can produce it trivially (DFS's 7-byte name field holds it with
+    // room to spare). Left unhandled, `host_dir.join("..")` would write
+    // this file's content into the *parent* of the output directory.
+    let image = build_dfs_disc(vec![DfsSideSpec::new("DISC", vec![DfsFile::plain("//", b"escaped?")])]);
+    let mut fs = DfsFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let parent_before: Vec<_> =
+        std::fs::read_dir(dir.path().parent().expect("tempdir has a parent")).unwrap().collect();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    // Nothing should have been written into the output directory's parent -
+    // its listing must be unchanged (still just the tempdir itself).
+    let parent_after: Vec<_> =
+        std::fs::read_dir(dir.path().parent().expect("tempdir has a parent")).unwrap().collect();
+    assert_eq!(parent_before.len(), parent_after.len(), "extraction must not add anything outside --output");
+
+    // The file must exist *inside* the output directory under a safe,
+    // substituted name, not silently dropped and not named "..".
+    let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(entries.len(), 1, "expected exactly one substituted file, got {entries:?}");
+    let substituted_name = entries[0].to_str().unwrap();
+    assert_ne!(substituted_name, "..");
+    assert_ne!(substituted_name, ".");
+    let content = std::fs::read(dir.path().join(substituted_name)).unwrap();
+    assert_eq!(content, b"escaped?");
+
+    assert!(
+        log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::Warning { message } if message.contains("unsafe"))),
+        "expected a warning about the substituted name: {:?}",
+        log.entries
+    );
+}

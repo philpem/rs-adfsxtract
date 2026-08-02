@@ -37,12 +37,36 @@ pub fn host_to_riscos_char(c: char) -> char {
 const HOST_ILLEGAL: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|', '\0'];
 
 /// Translates one RISC OS leafname (not a whole path) to a host-safe name.
-pub fn leafname_to_host(riscos_name: &str) -> String {
-    riscos_name
+/// Returns `(name, was_substituted)` - see [`leafname_to_host`]'s doc
+/// comment on why a substitution can happen and why callers must not treat
+/// it silently.
+pub fn leafname_to_host(riscos_name: &str) -> (String, bool) {
+    let host: String = riscos_name
         .chars()
         .map(riscos_to_host_char)
         .map(|c| if HOST_ILLEGAL.contains(&c) { ' ' } else { c })
-        .collect()
+        .collect();
+
+    // `Path::join` treats `.`/`..` as "this directory"/"parent directory",
+    // not a literal name, and an empty name collides with the parent
+    // directory itself when joined. Nothing in the on-disk format forbids
+    // a name field from containing arbitrary bytes, so a corrupted or
+    // deliberately crafted disc image can produce one of these: a RISC OS
+    // name of literally "." or "/" (a single byte) survives translation
+    // unchanged or maps straight to ".", and "//" - two bytes, trivially
+    // fits even DFS's 7-byte name field - becomes ".." via the swap above.
+    // Left unhandled, extracting such an entry as a *directory* would let
+    // every file inside it escape `--output` via `host_dir.join("..")`,
+    // compounding with nesting depth. Substituted with an explicit,
+    // obviously-synthetic name; the caller is expected to log this, since
+    // it means the disc's structure is no longer being represented
+    // faithfully on the host filesystem.
+    match host.as_str() {
+        "" => ("_empty_name_".to_string(), true),
+        "." => ("_dot_".to_string(), true),
+        ".." => ("_dotdot_".to_string(), true),
+        _ => (host, false),
+    }
 }
 
 pub fn leafname_to_riscos(host_name: &str) -> String {
@@ -74,9 +98,28 @@ mod tests {
     #[test]
     fn leafname_round_trip() {
         let riscos = "Fred/Bloggs?Was<Here>Ok+Now=Then;Now";
-        let host = leafname_to_host(riscos);
+        let (host, substituted) = leafname_to_host(riscos);
         assert_eq!(host, "Fred.Bloggs#Was$Here^Ok&Now@Then%Now");
+        assert!(!substituted);
         assert_eq!(leafname_to_riscos(&host), riscos);
+    }
+
+    #[test]
+    fn dangerous_names_are_substituted_not_passed_through() {
+        // "//" -> ".." via the '/'->'.' swap - would otherwise let
+        // `Path::join` escape the output directory.
+        let (host, substituted) = leafname_to_host("//");
+        assert_eq!(host, "_dotdot_");
+        assert!(substituted);
+        assert_ne!(host, "..");
+
+        let (host, substituted) = leafname_to_host("/");
+        assert_eq!(host, "_dot_");
+        assert!(substituted);
+
+        let (host, substituted) = leafname_to_host("");
+        assert_eq!(host, "_empty_name_");
+        assert!(substituted);
     }
 
     #[test]

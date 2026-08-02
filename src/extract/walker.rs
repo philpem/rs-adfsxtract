@@ -95,7 +95,7 @@ pub fn walk_and_extract<FS: FileSystem>(
 
         for obj in listing.objects {
             let riscos_child = format!("{riscos_path}.{}", obj.name);
-            let host_leaf = build_host_leafname(&obj);
+            let host_leaf = build_host_leafname(&obj, &riscos_child, log);
             let host_child = host_dir.join(&host_leaf);
 
             if obj.is_directory {
@@ -109,8 +109,16 @@ pub fn walk_and_extract<FS: FileSystem>(
     Ok(summary)
 }
 
-fn build_host_leafname(obj: &Object) -> String {
-    let host = crate::xlate::dosfs::leafname_to_host(&obj.name);
+fn build_host_leafname(obj: &Object, riscos_path: &str, log: &mut ExtractionLog) -> String {
+    let (host, substituted) = crate::xlate::dosfs::leafname_to_host(&obj.name);
+    if substituted {
+        log.push(LogEntry::Warning {
+            message: format!(
+                "{riscos_path}: translated name would be empty or \".\"/\"..\" (unsafe to use \
+                 as a host path component); substituted \"{host}\" instead"
+            ),
+        });
+    }
     let le = obj.load_exec();
     crate::xlate::dosfs::append_filetype_suffix(&host, le.filetype, obj.is_directory)
 }
