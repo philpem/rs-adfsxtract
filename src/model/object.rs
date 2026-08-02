@@ -6,6 +6,12 @@ pub struct Extent {
     pub len: u64,
 }
 
+/// Standard RISC OS object attribute bits (guide §3.3), as they appear in a
+/// FileCore directory entry's attributes byte. DFS has only one of these
+/// (`ATTR_LOCKED`) - see `format::dfs::catalogue::DfsEntry::locked`. Old
+/// (S/M/L) directories encode these in the top bit of each name-field
+/// character rather than a separate byte (see `dir_old.rs::decode_name`),
+/// but the resulting bit values here are the same.
 pub const ATTR_OWNER_READ: u32 = 1 << 0;
 pub const ATTR_OWNER_WRITE: u32 = 1 << 1;
 pub const ATTR_LOCKED: u32 = 1 << 2;

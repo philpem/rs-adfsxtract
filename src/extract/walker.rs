@@ -10,10 +10,21 @@ use crate::io::rescue::{BadSectorPolicy, RangeStatus, RescueMap};
 use crate::model::object::Object;
 use crate::sidecar::inf::{InfFields, build_inf_line};
 
+/// How to handle a directory `FileSystem::list` reports as broken (a failed
+/// integrity check for FileCore, guide §A.2/§A.5; an out-of-bounds entry
+/// for DFS, which has no checksum at all - see `format::dfs` module docs).
+/// Applied per directory encountered, not once for the whole disc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrokenDirPolicy {
+    /// Abort the whole extraction at the first broken directory.
     Fail,
+    /// Skip this directory and everything under it; continue with the rest
+    /// of the tree.
     Skip,
+    /// Extract whatever `list` was able to recover (already filtered to
+    /// the entries that passed structural sanity checks - see
+    /// `ListResult::objects` vs `ListResult::anomalies`), logging the
+    /// anomalies as a warning rather than treating them as fatal.
     Recover,
 }
 
@@ -22,6 +33,8 @@ pub struct ExtractOptions {
     pub write_inf: bool,
     pub dry_run: bool,
     pub broken_dir_policy: BrokenDirPolicy,
+    /// Only consulted when `rescue_map` is `Some` - with no rescue map,
+    /// every byte is read and written as-is regardless of this setting.
     pub bad_sector_policy: BadSectorPolicy,
     pub rescue_map: Option<RescueMap>,
 }
