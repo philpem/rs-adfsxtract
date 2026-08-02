@@ -1,0 +1,297 @@
+//! End-to-end scenario tests: full `extract::walker` pipeline (not just
+//! `FileSystem::list`) against synthetic images, covering the specific
+//! cases called out in the implementation plan.
+
+use std::path::Path;
+
+use tempfile::tempdir;
+
+use crate::extract::log::ExtractionLog;
+use crate::extract::walker::{BrokenDirPolicy, ExtractOptions, walk_and_extract};
+use crate::format::filecore::FileCoreFs;
+use crate::io::rescue::{BadSectorPolicy, RescueMap};
+use crate::testutil::{NewMapConfig, SynthEntry, SynthFile, build_new_map_disc};
+
+fn default_opts(output_dir: &Path) -> ExtractOptions {
+    ExtractOptions {
+        output_dir: output_dir.to_path_buf(),
+        write_inf: false,
+        dry_run: false,
+        broken_dir_policy: BrokenDirPolicy::Recover,
+        bad_sector_policy: BadSectorPolicy::NullFill,
+        rescue_map: None,
+    }
+}
+
+#[test]
+fn dosfs_characters_translated_end_to_end() {
+    // Non-big directory entries only hold a 10-character name field, so
+    // this uses just the 7 DOSFS-swapped characters, not a realistic
+    // full filename.
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("/?<>+=;", b"x"))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    let expected = dir.path().join(".#$^&@%");
+    assert!(expected.exists(), "expected {expected:?} to exist; log: {:?}", log.entries);
+}
+
+#[test]
+fn riscos_charset_high_byte_name_end_to_end() {
+    let cfg = NewMapConfig::default();
+    // '€' (U+20AC) decodes from RISC OS byte 0x80; round-trips through the
+    // synthetic encoder's reverse-lookup table.
+    let name = "Price\u{20AC}File";
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain(name, b"money"))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    assert!(dir.path().join(name).exists(), "log: {:?}", log.entries);
+}
+
+#[test]
+fn typed_file_gets_suffix_plain_file_does_not() {
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(
+        vec![
+            SynthEntry::File(SynthFile::typed("Typed", 0xFEB, 1_600_000_000, b"typed")),
+            SynthEntry::File(SynthFile::plain("Untyped", b"plain")),
+        ],
+        &cfg,
+    );
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    assert!(dir.path().join("Typed,feb").exists(), "log: {:?}", log.entries);
+    assert!(dir.path().join("Untyped").exists(), "log: {:?}", log.entries);
+    assert!(!dir.path().join("Untyped,000").exists());
+}
+
+#[test]
+fn zero_length_file_extracts_as_empty() {
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Empty", b""))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    let path = dir.path().join("Empty");
+    assert!(path.exists());
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+}
+
+#[test]
+fn nested_directories_walk_correctly() {
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(
+        vec![SynthEntry::dir(
+            "Outer",
+            vec![SynthEntry::dir(
+                "Inner",
+                vec![SynthEntry::File(SynthFile::plain("Deep", b"deep content"))],
+            )],
+        )],
+        &cfg,
+    );
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    let deep_path = dir.path().join("Outer").join("Inner").join("Deep");
+    assert_eq!(std::fs::read(&deep_path).unwrap(), b"deep content");
+    assert_eq!(summary.files_extracted, 1);
+    assert_eq!(summary.dirs_created, 3); // root, Outer, Inner
+}
+
+#[test]
+fn inf_sidecar_written_when_requested() {
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(
+        vec![SynthEntry::File(SynthFile::typed("Doc", 0xFFF, 1_650_000_000, b"contents"))],
+        &cfg,
+    );
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.write_inf = true;
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    let inf_path = dir.path().join("Doc,fff.inf");
+    let inf_content = std::fs::read_to_string(&inf_path).unwrap();
+    assert!(inf_content.starts_with("Doc "), "inf content: {inf_content}");
+    assert!(inf_content.contains("CRC32="));
+    assert!(!inf_content.contains('&'), "hex fields must be bare, not &-prefixed: {inf_content}");
+}
+
+fn corrupt_root_check_byte(image_bytes: &mut [u8], sector_size: usize) {
+    let tail = crate::format::filecore::dir_old::tail_layout(false);
+    let root_addr = 2 * sector_size;
+    image_bytes[root_addr + tail.check_byte] ^= 0xFF;
+}
+
+#[test]
+fn broken_directory_fail_policy_aborts() {
+    let cfg = NewMapConfig::default();
+    let mut image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", b"x"))], &cfg);
+    corrupt_root_check_byte(&mut image.bytes, 1 << cfg.log2_sector_size);
+
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.broken_dir_policy = BrokenDirPolicy::Fail;
+    let mut log = ExtractionLog::default();
+    let result = walk_and_extract(&mut fs, &opts, &mut log);
+    assert!(result.is_err());
+}
+
+#[test]
+fn broken_directory_skip_policy_extracts_nothing_from_it() {
+    let cfg = NewMapConfig::default();
+    let mut image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", b"x"))], &cfg);
+    corrupt_root_check_byte(&mut image.bytes, 1 << cfg.log2_sector_size);
+
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.broken_dir_policy = BrokenDirPolicy::Skip;
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+    assert_eq!(summary.files_extracted, 0);
+    assert!(!dir.path().join("Fred").exists());
+}
+
+#[test]
+fn broken_directory_recover_policy_still_extracts() {
+    let cfg = NewMapConfig::default();
+    let mut image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", b"x"))], &cfg);
+    corrupt_root_check_byte(&mut image.bytes, 1 << cfg.log2_sector_size);
+
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.broken_dir_policy = BrokenDirPolicy::Recover;
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+    assert_eq!(summary.files_extracted, 1);
+    assert!(dir.path().join("Fred").exists());
+    assert!(
+        log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::BrokenDirectory { .. })),
+        "expected a BrokenDirectory log entry"
+    );
+}
+
+fn file_disc_addr(fs: &mut FileCoreFs<std::io::Cursor<Vec<u8>>>, name: &str) -> (u64, u64) {
+    use crate::format::fs::FileSystem;
+    let root = fs.root().unwrap();
+    let listing = fs.list(&root).unwrap();
+    let obj = listing.objects.iter().find(|o| o.name == name).unwrap();
+    let e = obj.extents[0];
+    (e.disc_addr, e.len)
+}
+
+fn rescue_map_marking_bad(start: u64, len: u64, total_bad: bool, total_len: u64) -> RescueMap {
+    let text = if total_bad {
+        format!("0 + 1\n{start} {total_len} -\n")
+    } else {
+        format!("0 + 1\n{start} {len} -\n")
+    };
+    RescueMap::parse(&text).unwrap()
+}
+
+#[test]
+fn bad_sector_null_fill() {
+    let cfg = NewMapConfig::default();
+    let content = vec![b'X'; (cfg.idlen as usize + 1) * (1 << cfg.log2_bpmb)];
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", &content))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let (addr, len) = file_disc_addr(&mut fs, "Fred");
+    // mark the first half of the file's extent bad
+    let bad_len = len / 2;
+
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.bad_sector_policy = BadSectorPolicy::NullFill;
+    opts.rescue_map = Some(rescue_map_marking_bad(addr, bad_len, false, len));
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    let bytes = std::fs::read(dir.path().join("Fred")).unwrap();
+    assert_eq!(bytes.len(), content.len());
+    assert!(bytes[..bad_len as usize].iter().all(|&b| b == 0));
+    assert!(bytes[bad_len as usize..].iter().all(|&b| b == b'X'));
+}
+
+#[test]
+fn bad_sector_marker_fill() {
+    let cfg = NewMapConfig::default();
+    let content = vec![b'X'; (cfg.idlen as usize + 1) * (1 << cfg.log2_bpmb)];
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", &content))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let (addr, len) = file_disc_addr(&mut fs, "Fred");
+    let bad_len = len / 2;
+
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.bad_sector_policy = BadSectorPolicy::MarkerFill;
+    opts.rescue_map = Some(rescue_map_marking_bad(addr, bad_len, false, len));
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    let bytes = std::fs::read(dir.path().join("Fred")).unwrap();
+    assert_eq!(bytes.len(), content.len());
+    assert_ne!(&bytes[..bad_len as usize], &content[..bad_len as usize]);
+    assert!(bytes[..4].starts_with(b"BAD "));
+}
+
+#[test]
+fn bad_sector_skip_shortens_output() {
+    let cfg = NewMapConfig::default();
+    let content = vec![b'X'; (cfg.idlen as usize + 1) * (1 << cfg.log2_bpmb)];
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", &content))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let (addr, len) = file_disc_addr(&mut fs, "Fred");
+    let bad_len = len / 2;
+
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.bad_sector_policy = BadSectorPolicy::Skip;
+    opts.rescue_map = Some(rescue_map_marking_bad(addr, bad_len, false, len));
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    let bytes = std::fs::read(dir.path().join("Fred")).unwrap();
+    assert_eq!(bytes.len() as u64, len - bad_len);
+}
+
+#[test]
+fn wholly_bad_file_is_not_extracted() {
+    let cfg = NewMapConfig::default();
+    let content = vec![b'X'; (cfg.idlen as usize + 1) * (1 << cfg.log2_bpmb)];
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", &content))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let (addr, len) = file_disc_addr(&mut fs, "Fred");
+
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.rescue_map = Some(rescue_map_marking_bad(addr, len, true, len));
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    assert_eq!(summary.files_skipped, 1);
+    assert_eq!(summary.files_extracted, 0);
+    assert!(!dir.path().join("Fred").exists());
+    assert!(
+        log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::SkippedWhollyBad { .. })),
+        "expected a SkippedWhollyBad log entry"
+    );
+}
