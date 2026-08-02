@@ -8,8 +8,9 @@ use serde::Serialize;
 use acornfsextract::cli::{Cli, Command, OutputFormat};
 use acornfsextract::error::FcError;
 use acornfsextract::extract::log::ExtractionLog;
-use acornfsextract::extract::report::{DiscReport, build_report};
+use acornfsextract::extract::report::{DiscReport, build_dfs_report, build_report};
 use acornfsextract::extract::walker::{ExtractOptions, ExtractSummary, walk_and_extract};
+use acornfsextract::format::dfs::DfsFs;
 use acornfsextract::format::filecore::FileCoreFs;
 use acornfsextract::io::rescue::RescueMap;
 
@@ -50,15 +51,37 @@ fn main() -> ExitCode {
     }
 }
 
-fn open_image(path: &Path) -> Result<FileCoreFs<File>, FcError> {
+/// Either backend, opened and ready to walk. FileCore is tried first (its
+/// detection is signature-based and strict); DFS - which has no magic
+/// number, only structural plausibility - is only ever tried as a fallback
+/// once FileCore has ruled itself out.
+enum AnyFs {
+    FileCore(Box<FileCoreFs<File>>),
+    Dfs(DfsFs<File>),
+}
+
+fn open_image(path: &Path) -> Result<AnyFs, FcError> {
     let file = File::open(path).map_err(FcError::from)?;
-    FileCoreFs::open(file)
+    match FileCoreFs::open(file) {
+        Ok(fs) => return Ok(AnyFs::FileCore(Box::new(fs))),
+        Err(FcError::NotRecognised) => {}
+        Err(e) => return Err(e),
+    }
+    let file = File::open(path).map_err(FcError::from)?;
+    DfsFs::open(file).map(AnyFs::Dfs)
+}
+
+fn build_any_report(fs: &mut AnyFs) -> Result<DiscReport, FcError> {
+    match fs {
+        AnyFs::FileCore(fc) => build_report(fc.as_mut()),
+        AnyFs::Dfs(dfs) => build_dfs_report(dfs),
+    }
 }
 
 fn run_info(image: &Path, format: OutputFormat) -> ExitCode {
     let mut fs = match open_image(image) {
         Ok(fs) => fs,
-        Err(FcError::NotFileCore) => {
+        Err(FcError::NotRecognised) => {
             print_not_recognised(format);
             return ExitCode::from(EXIT_NOT_RECOGNISED);
         }
@@ -68,7 +91,7 @@ fn run_info(image: &Path, format: OutputFormat) -> ExitCode {
         }
     };
 
-    match build_report(&mut fs) {
+    match build_any_report(&mut fs) {
         Ok(report) => {
             print_report(&report, format);
             ExitCode::from(EXIT_OK)
@@ -94,7 +117,7 @@ fn run_extract(
 ) -> ExitCode {
     let mut fs = match open_image(image) {
         Ok(fs) => fs,
-        Err(FcError::NotFileCore) => {
+        Err(FcError::NotRecognised) => {
             print_not_recognised(format);
             return ExitCode::from(EXIT_NOT_RECOGNISED);
         }
@@ -104,7 +127,7 @@ fn run_extract(
         }
     };
 
-    let report = match build_report(&mut fs) {
+    let report = match build_any_report(&mut fs) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -135,7 +158,10 @@ fn run_extract(
     };
 
     let mut log = ExtractionLog::default();
-    let result = walk_and_extract(&mut fs, &opts, &mut log);
+    let result = match &mut fs {
+        AnyFs::FileCore(fc) => walk_and_extract(fc.as_mut(), &opts, &mut log),
+        AnyFs::Dfs(dfs) => walk_and_extract(dfs, &opts, &mut log),
+    };
 
     if let Some(p) = log_path
         && let Err(e) = log.write_to(p) {
@@ -159,7 +185,7 @@ fn print_not_recognised(format: OutputFormat) {
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&NotRecognised { recognized: false }).unwrap());
         }
-        OutputFormat::Text => println!("not a recognised FileCore image"),
+        OutputFormat::Text => println!("not a recognised disc image (FileCore or DFS)"),
     }
 }
 

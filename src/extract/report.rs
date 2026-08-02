@@ -6,6 +6,7 @@
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::format::dfs::DfsFs;
 use crate::format::filecore::{DirType, FileCoreFs, MapType};
 use crate::format::fs::FileSystem;
 use crate::io::SectorSource;
@@ -97,6 +98,38 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
         zone_checksum_ok_count,
         zone_checksum_total,
         cross_check_ok,
+        root_check_byte_ok: !root_list.is_broken,
+    })
+}
+
+/// DFS has no map/directory-type distinction and no checksum of any kind,
+/// so most of the structural-health fields are simply absent rather than a
+/// placeholder value. `dir_type` is repurposed to carry sidedness, since
+/// that's the one piece of DFS-specific structure worth surfacing here.
+pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport> {
+    let cat0 = &fs.catalogues[0];
+    let disc_name = cat0.title.clone();
+    let boot_option = cat0.boot_option;
+    let total_sectors: u64 = fs.catalogues.iter().map(|c| c.total_sectors as u64).sum();
+
+    let root = fs.root()?;
+    let root_list = fs.list(&root)?;
+
+    Ok(DiscReport {
+        filesystem: "DFS",
+        map_type: "n/a",
+        dir_type: if fs.double_sided { "double-sided" } else { "single-sided" },
+        disc_name: Some(disc_name),
+        disc_id: None,
+        disc_size: Some(total_sectors * 256),
+        sector_size: Some(256),
+        boot_option: Some(boot_option),
+        root_title: root_list.title,
+        boot_block_present: false,
+        boot_block_checksum_ok: None,
+        zone_checksum_ok_count: None,
+        zone_checksum_total: None,
+        cross_check_ok: None,
         root_check_byte_ok: !root_list.is_broken,
     })
 }

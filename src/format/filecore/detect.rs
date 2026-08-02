@@ -81,7 +81,7 @@ pub fn detect(source: &mut dyn SectorSource) -> Result<Detection> {
             return Ok(from_disc_record(dr, None));
         }
 
-    Err(FcError::NotFileCore)
+    Err(FcError::NotRecognised)
 }
 
 fn from_disc_record(dr: DiscRecord, boot_block: Option<BootBlock>) -> Detection {

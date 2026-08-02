@@ -6,7 +6,7 @@ use crate::extract::walker::BrokenDirPolicy;
 use crate::io::rescue::BadSectorPolicy;
 
 #[derive(Parser)]
-#[command(name = "acornfsextract", about = "Extracts files from RISC OS FileCore disc images", version)]
+#[command(name = "acornfsextract", about = "Extracts files from Acorn FileCore (ADFS) and DFS disc images", version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

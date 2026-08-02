@@ -8,9 +8,12 @@ use tempfile::tempdir;
 
 use crate::extract::log::ExtractionLog;
 use crate::extract::walker::{BrokenDirPolicy, ExtractOptions, walk_and_extract};
+use crate::format::dfs::DfsFs;
 use crate::format::filecore::FileCoreFs;
 use crate::io::rescue::{BadSectorPolicy, RescueMap};
-use crate::testutil::{NewMapConfig, SynthEntry, SynthFile, build_new_map_disc};
+use crate::testutil::{
+    DfsFile, DfsSideSpec, NewMapConfig, SynthEntry, SynthFile, build_dfs_disc, build_new_map_disc,
+};
 
 fn default_opts(output_dir: &Path) -> ExtractOptions {
     ExtractOptions {
@@ -294,4 +297,82 @@ fn wholly_bad_file_is_not_extracted() {
         log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::SkippedWhollyBad { .. })),
         "expected a SkippedWhollyBad log entry"
     );
+}
+
+#[test]
+fn dfs_ssd_extraction_uses_dirchar_prefix_and_locked_attr() {
+    let image = build_dfs_disc(vec![DfsSideSpec::new(
+        "DISC",
+        vec![DfsFile::plain("BOOT", b"boot text"), DfsFile::in_dir("CODE", 'L', b"code").locked()],
+    )]);
+    let mut fs = DfsFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.write_inf = true;
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    assert!(dir.path().join("BOOT").exists(), "log: {:?}", log.entries);
+    assert!(dir.path().join("L.CODE").exists(), "log: {:?}", log.entries);
+
+    let inf = std::fs::read_to_string(dir.path().join("L.CODE.inf")).unwrap();
+    let parts: Vec<&str> = inf.split_whitespace().collect();
+    assert_eq!(parts[0], "L.CODE");
+    assert_eq!(parts[4], "04", "attrs field should carry ATTR_LOCKED: {inf}");
+}
+
+#[test]
+fn dfs_dsd_extraction_creates_side_directories() {
+    let image = build_dfs_disc(vec![
+        DfsSideSpec::new("SIDE0", vec![DfsFile::plain("ALPHA", b"alpha content")]),
+        DfsSideSpec::new("SIDE1", vec![DfsFile::plain("BETA", b"beta content")]),
+    ]);
+    let mut fs = DfsFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    assert!(dir.path().join("Side0").join("ALPHA").exists(), "log: {:?}", log.entries);
+    assert!(dir.path().join("Side1").join("BETA").exists(), "log: {:?}", log.entries);
+}
+
+/// Pushes the second file's catalogue entry (`sector1` offset `0x117`, the
+/// start-sector byte of entry index 1) out of the disc's bounds - DFS's
+/// only integrity signal, since there's no checksum to corrupt instead.
+fn dfs_image_with_one_out_of_bounds_entry() -> Vec<u8> {
+    let image = build_dfs_disc(vec![DfsSideSpec::new(
+        "DISC",
+        vec![DfsFile::plain("GOOD", b"fine"), DfsFile::plain("BAD", b"x")],
+    )]);
+    let mut bytes = image.bytes;
+    bytes[0x117] = 250;
+    bytes
+}
+
+#[test]
+fn dfs_broken_entry_recover_policy_extracts_good_files() {
+    let mut fs = DfsFs::open(std::io::Cursor::new(dfs_image_with_one_out_of_bounds_entry())).unwrap();
+    let dir = tempdir().unwrap();
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
+
+    assert!(dir.path().join("GOOD").exists(), "log: {:?}", log.entries);
+    assert!(!dir.path().join("BAD").exists());
+    assert_eq!(summary.files_extracted, 1);
+    assert!(
+        log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::BrokenDirectory { .. })),
+        "expected the out-of-bounds entry to be logged: {:?}",
+        log.entries
+    );
+}
+
+#[test]
+fn dfs_broken_entry_fail_policy_aborts() {
+    let mut fs = DfsFs::open(std::io::Cursor::new(dfs_image_with_one_out_of_bounds_entry())).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.broken_dir_policy = BrokenDirPolicy::Fail;
+    let mut log = ExtractionLog::default();
+    let result = walk_and_extract(&mut fs, &opts, &mut log);
+    assert!(result.is_err(), "Fail policy should abort on an out-of-bounds DFS entry");
 }

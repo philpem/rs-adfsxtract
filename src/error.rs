@@ -12,8 +12,8 @@ pub enum FcError {
     BrokenDirectory(String),
     #[error("unsupported format: {0}")]
     Unsupported(String),
-    #[error("not a recognised FileCore image")]
-    NotFileCore,
+    #[error("not a recognised disc image")]
+    NotRecognised,
 }
 
 pub type Result<T> = std::result::Result<T, FcError>;

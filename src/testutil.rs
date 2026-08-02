@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
+use crate::format::dfs::geometry::DfsGeometry;
 use crate::format::filecore::checksums::{ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold, zone_check};
 use crate::format::filecore::dir_old;
 use crate::model::filetype;
@@ -605,6 +606,211 @@ pub fn build_old_map_disc(files: Vec<SynthFile>, small: bool, disc_name: &str) -
     BuiltImage { bytes: disc }
 }
 
+// ---------------------------------------------------------------------
+// DFS (Disc Filing System) builder
+// ---------------------------------------------------------------------
+
+pub struct DfsFile {
+    pub name: String,
+    pub dir_char: char,
+    pub locked: bool,
+    pub load: u32,
+    pub exec: u32,
+    pub content: Vec<u8>,
+}
+
+impl DfsFile {
+    /// A file in the `$` directory with a plain (non-date-stamped) address
+    /// pair. `load`/`exec` must each fit the DFS-representable shape: low
+    /// 16 bits free, bits 16-23 one of `0x00/0x55/0xAA/0xFF` (the only
+    /// values the 2-bit hardware field can reproduce), bits 24-31 zero.
+    pub fn plain(name: &str, content: &[u8]) -> Self {
+        Self { name: name.to_string(), dir_char: '$', locked: false, load: 0x1900, exec: 0x1900, content: content.to_vec() }
+    }
+
+    pub fn in_dir(name: &str, dir_char: char, content: &[u8]) -> Self {
+        assert!(dir_char.is_ascii(), "test dir chars are kept ASCII for simplicity");
+        Self { name: name.to_string(), dir_char, locked: false, load: 0x1900, exec: 0x1900, content: content.to_vec() }
+    }
+
+    pub fn locked(mut self) -> Self {
+        self.locked = true;
+        self
+    }
+}
+
+pub struct DfsSideSpec {
+    pub title: String,
+    pub boot_option: u8,
+    pub files: Vec<DfsFile>,
+}
+
+impl DfsSideSpec {
+    pub fn new(title: &str, files: Vec<DfsFile>) -> Self {
+        Self { title: title.to_string(), boot_option: 0, files }
+    }
+}
+
+/// 8-bit high byte (bits 16-23 of a load/exec address) -> the 2-bit field
+/// DFS actually stores, inverting `catalogue::replicate_2bit`.
+fn encode_2bit(high_byte: u8) -> u8 {
+    match high_byte {
+        0x00 => 0,
+        0x55 => 1,
+        0xAA => 2,
+        0xFF => 3,
+        other => panic!(
+            "DFS load/exec high byte must be one of 0x00/0x55/0xAA/0xFF (the 2-bit field is \
+             pattern-replicated to a full byte), got {other:#04x}"
+        ),
+    }
+}
+
+fn write_logical(disc: &mut [u8], geometry: &DfsGeometry, side: u8, logical_addr: u64, data: &[u8]) {
+    let extents = geometry.translate(side, logical_addr, data.len() as u64);
+    let mut offset = 0usize;
+    for e in extents {
+        let len = e.len as usize;
+        let start = e.disc_addr as usize;
+        disc[start..start + len].copy_from_slice(&data[offset..offset + len]);
+        offset += len;
+    }
+}
+
+struct PlacedFile<'a> {
+    file: &'a DfsFile,
+    start_sector: u32,
+}
+
+fn place_side_files(spec: &DfsSideSpec) -> (Vec<PlacedFile<'_>>, u32) {
+    let watford = spec.files.len() > 31;
+    let mut next_sector = if watford { 4 } else { 2 };
+    let mut placed = Vec::with_capacity(spec.files.len());
+    for f in &spec.files {
+        let start_sector = next_sector;
+        let len_sectors = (f.content.len() as u32).div_ceil(256).max(1);
+        next_sector += len_sectors;
+        placed.push(PlacedFile { file: f, start_sector });
+    }
+    (placed, next_sector)
+}
+
+fn encode_entry_info(f: &DfsFile, start_sector: u32) -> [u8; 8] {
+    let length = f.content.len();
+    assert!(length < (1 << 18), "DFS file length must fit in 18 bits");
+    assert!(start_sector < 1024, "DFS start sector must fit in 10 bits");
+    assert_eq!(f.load >> 24, 0, "DFS load must fit in 24 bits (2-bit extension + 16-bit low word)");
+    assert_eq!(f.exec >> 24, 0, "DFS exec must fit in 24 bits");
+
+    let load_hi = encode_2bit(((f.load >> 16) & 0xFF) as u8);
+    let exec_hi = encode_2bit(((f.exec >> 16) & 0xFF) as u8);
+    let length_hi = ((length >> 16) & 0x3) as u8;
+    let sector_hi = ((start_sector >> 8) & 0x3) as u8;
+    let ext = sector_hi | (load_hi << 2) | (length_hi << 4) | (exec_hi << 6);
+
+    let mut info = [0u8; 8];
+    info[0..2].copy_from_slice(&(f.load as u16).to_le_bytes());
+    info[2..4].copy_from_slice(&(f.exec as u16).to_le_bytes());
+    info[4..6].copy_from_slice(&(length as u16).to_le_bytes());
+    info[6] = ext;
+    info[7] = (start_sector & 0xFF) as u8;
+    info
+}
+
+fn write_side_catalogue(
+    disc: &mut [u8],
+    geometry: &DfsGeometry,
+    side: u8,
+    spec: &DfsSideSpec,
+    total_sectors: u32,
+    placed: &[PlacedFile],
+) {
+    let watford = placed.len() > 31;
+    let mut s0 = [0u8; 256];
+    let mut s1 = [0u8; 256];
+
+    let title_bytes = pad_to(encode_charset_str(&spec.title), 12);
+    s0[0..8].copy_from_slice(&title_bytes[0..8]);
+    s1[0..4].copy_from_slice(&title_bytes[8..12]);
+
+    let std_count = placed.len().min(31);
+    s1[5] = (std_count * 8) as u8;
+    s1[6] = ((spec.boot_option & 0x3) << 4) | (((total_sectors >> 8) & 0x3) as u8);
+    s1[7] = (total_sectors & 0xFF) as u8;
+
+    for (i, pf) in placed.iter().take(31).enumerate() {
+        let off = 8 + i * 8;
+        let mut name_field = [b' '; 7];
+        for (j, b) in encode_charset_str(&pf.file.name).into_iter().take(7).enumerate() {
+            name_field[j] = b;
+        }
+        s0[off..off + 7].copy_from_slice(&name_field);
+        s0[off + 7] = pf.file.dir_char as u8 | if pf.file.locked { 0x80 } else { 0 };
+        s1[off..off + 8].copy_from_slice(&encode_entry_info(pf.file, pf.start_sector));
+    }
+
+    write_logical(disc, geometry, side, 0x000, &s0);
+    write_logical(disc, geometry, side, 0x100, &s1);
+
+    if watford {
+        let mut s2 = [0u8; 256];
+        let mut s3 = [0u8; 256];
+        s2[0..8].copy_from_slice(&[0xAA; 8]);
+        let extra = &placed[31..];
+        s3[5] = (extra.len() * 8) as u8;
+        s3[6] = s1[6];
+        s3[7] = s1[7];
+        for (i, pf) in extra.iter().enumerate() {
+            let off = 8 + i * 8;
+            let mut name_field = [b' '; 7];
+            for (j, b) in encode_charset_str(&pf.file.name).into_iter().take(7).enumerate() {
+                name_field[j] = b;
+            }
+            s2[off..off + 7].copy_from_slice(&name_field);
+            s2[off + 7] = pf.file.dir_char as u8 | if pf.file.locked { 0x80 } else { 0 };
+            s3[off..off + 8].copy_from_slice(&encode_entry_info(pf.file, pf.start_sector));
+        }
+        write_logical(disc, geometry, side, 0x200, &s2);
+        write_logical(disc, geometry, side, 0x300, &s3);
+    }
+}
+
+/// Builds a synthetic DFS image: one side for `.ssd`, two for `.dsd`. File
+/// content is written at its *physically interleaved* location for a
+/// double-sided image (via `DfsGeometry::translate`, the same code path the
+/// reader uses), not at a flat logical offset - a synthetic image that
+/// skipped this would never exercise the track-boundary-split logic the way
+/// a real `.dsd` does.
+pub fn build_dfs_disc(sides: Vec<DfsSideSpec>) -> BuiltImage {
+    assert!((1..=2).contains(&sides.len()), "DFS images are single- or double-sided");
+    let double_sided = sides.len() == 2;
+    let geometry = DfsGeometry { double_sided };
+
+    let mut per_side = Vec::with_capacity(sides.len());
+    let mut max_logical_sectors: u32 = 0;
+    for spec in &sides {
+        let (placed, needed) = place_side_files(spec);
+        max_logical_sectors = max_logical_sectors.max(needed);
+        per_side.push(placed);
+    }
+
+    let total_sectors = max_logical_sectors;
+    let physical_sectors = if double_sided { total_sectors.div_ceil(10) * 20 } else { total_sectors };
+    let mut disc = vec![0u8; physical_sectors as usize * 256];
+
+    for (side_idx, spec) in sides.iter().enumerate() {
+        let side = side_idx as u8;
+        let placed = &per_side[side_idx];
+        write_side_catalogue(&mut disc, &geometry, side, spec, total_sectors, placed);
+        for pf in placed {
+            let logical_addr = pf.start_sector as u64 * 256;
+            write_logical(&mut disc, &geometry, side, logical_addr, &pf.file.content);
+        }
+    }
+
+    BuiltImage { bytes: disc }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +895,92 @@ mod tests {
         let listing = fs.list(&root).unwrap();
         assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
         assert_eq!(listing.objects[0].name, "LongFileName");
+    }
+
+    #[test]
+    fn dfs_ssd_round_trip() {
+        use crate::format::dfs::DfsFs;
+
+        let image = build_dfs_disc(vec![DfsSideSpec::new(
+            "MYDISC",
+            vec![DfsFile::plain("BOOT", b"boot text"), DfsFile::in_dir("CODE", 'L', b"code bytes").locked()],
+        )]);
+        let mut fs = DfsFs::open(image.cursor()).unwrap();
+        assert!(!fs.double_sided);
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+        assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
+        assert_eq!(listing.title, "MYDISC");
+        assert_eq!(listing.objects.len(), 2);
+
+        let boot = listing.objects.iter().find(|o| o.name == "BOOT").unwrap();
+        let mut collected = Vec::new();
+        fs.read_object(boot, &mut |_addr, chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, b"boot text");
+
+        let code = listing.objects.iter().find(|o| o.name == "L.CODE").unwrap();
+        assert!(code.is_locked());
+    }
+
+    #[test]
+    fn dfs_dsd_round_trip_with_track_spanning_file() {
+        use crate::format::dfs::DfsFs;
+
+        // Pad side 0 with a filler file that exactly fills sectors 2-7, so
+        // the real content file starts at sector 8 (still track 0, which
+        // ends at sector 9) and its 4-sector run crosses into track 1 -
+        // this is the scenario that would silently corrupt if the
+        // interleave split in `geometry.rs` were wrong.
+        let filler = vec![DfsFile::plain("FILLER", &[0xEE; 6 * 256])];
+        let content: Vec<u8> = (0..(3 * 256 + 40)).map(|i| (i % 256) as u8).collect();
+        let mut side0_files = filler;
+        side0_files.push(DfsFile::plain("SPAN", &content));
+
+        let image = build_dfs_disc(vec![
+            DfsSideSpec::new("SIDE0", side0_files),
+            DfsSideSpec::new("SIDE1", vec![DfsFile::plain("OTHER", b"side 1 content")]),
+        ]);
+        let mut fs = DfsFs::open(image.cursor()).unwrap();
+        assert!(fs.double_sided);
+
+        let root = fs.root().unwrap();
+        let root_listing = fs.list(&root).unwrap();
+        assert_eq!(root_listing.objects.len(), 2);
+        let side0_obj = root_listing.objects.iter().find(|o| o.name == "Side0").unwrap();
+        let side0_listing = fs.list(side0_obj).unwrap();
+        assert!(!side0_listing.is_broken, "anomalies: {:?}", side0_listing.anomalies);
+
+        let span = side0_listing.objects.iter().find(|o| o.name == "SPAN").unwrap();
+        assert!(span.extents.len() >= 2, "expected the track-crossing file to split into multiple extents");
+        let mut collected = Vec::new();
+        fs.read_object(span, &mut |_addr, chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, content, "reassembled bytes must match despite the track-boundary split");
+
+        let side1_obj = root_listing.objects.iter().find(|o| o.name == "Side1").unwrap();
+        let side1_listing = fs.list(side1_obj).unwrap();
+        assert_eq!(side1_listing.objects.len(), 1);
+        assert_eq!(side1_listing.objects[0].name, "OTHER");
+    }
+
+    #[test]
+    fn dfs_watford_extension_round_trip() {
+        use crate::format::dfs::DfsFs;
+
+        let files: Vec<DfsFile> = (0..40).map(|i| DfsFile::plain(&format!("F{i}"), b"x")).collect();
+        let image = build_dfs_disc(vec![DfsSideSpec::new("WATFORD", files)]);
+        let mut fs = DfsFs::open(image.cursor()).unwrap();
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+        assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
+        assert_eq!(listing.objects.len(), 40);
+        assert!(listing.objects.iter().any(|o| o.name == "F39"));
     }
 }
