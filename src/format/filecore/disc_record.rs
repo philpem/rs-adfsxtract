@@ -142,9 +142,19 @@ pub fn parse_boot_block(raw: &[u8; 512]) -> Result<BootBlock> {
 /// True if a candidate boot block / zone-0 disc record buffer looks like a
 /// real disc record rather than all-zero/uninitialised data (guide §1.4's
 /// "if the boot block fields aren't plausible... fall through").
+///
+/// Also the only gate on `log2_bpmb` before it's used as a shift amount
+/// throughout `map_new.rs` (`bpmb() = 1u32 << log2_bpmb`). Real media only
+/// ever uses 7-10 (see the guide's §C.1/§C.4 worked examples); this allows
+/// generous headroom above that while still ruling out the danger zone -
+/// `log2_bpmb >= 32` overflows the shift, which panics in a debug build
+/// but silently wraps to a masked (wrong) value in release, propagating a
+/// corrupted allocation-unit size into every subsequent size calculation
+/// instead of failing loudly.
 pub fn looks_plausible(dr: &DiscRecord) -> bool {
     dr.log2_sector_size >= 8
         && dr.log2_sector_size <= 12
+        && dr.log2_bpmb <= 20
         && !(dr.sectors_per_track == 0 && dr.heads == 0 && dr.root_dir == 0)
 }
 
@@ -185,5 +195,13 @@ mod tests {
         bytes[0] = 8;
         let dr = parse_disc_record(&bytes).unwrap();
         assert!(dr.is_old_map());
+    }
+
+    #[test]
+    fn rejects_log2_bpmb_that_would_overflow_a_shift() {
+        let mut bytes = sample_bytes();
+        bytes[5] = 200; // log2_bpmb, would overflow `1u32 << log2_bpmb`
+        let dr = parse_disc_record(&bytes).unwrap();
+        assert!(!looks_plausible(&dr));
     }
 }
