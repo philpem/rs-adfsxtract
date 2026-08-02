@@ -96,8 +96,16 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
     let heap_start = entries_start + n_entries * ENTRY_SIZE;
     let region1_end = heap_start + names_size;
 
-    let mut objects = Vec::with_capacity(n_entries);
+    let mut objects = Vec::new();
     if data.len() >= region1_end {
+        // Only allocate once `n_entries` is known to be consistent with
+        // the buffer we actually have - `region1_end` grows with
+        // `n_entries`, so this bounds it implicitly. A corrupted
+        // `BigDirEntries` field (up to u32::MAX) read directly into
+        // `Vec::with_capacity` before this check would abort the process
+        // trying to allocate an absurd amount of memory instead of being
+        // handled as the anomaly it is.
+        objects.reserve_exact(n_entries);
         for i in 0..n_entries {
             let off = entries_start + i * ENTRY_SIZE;
             let entry = &data[off..off + ENTRY_SIZE];
@@ -221,5 +229,20 @@ mod tests {
         let new_map = NewMapIndex::empty_for_test(dr);
         let result = decode_big_dir(&[], &new_map, 0).unwrap();
         assert!(result.is_broken);
+    }
+
+    #[test]
+    fn huge_n_entries_does_not_attempt_a_huge_allocation() {
+        // n_entries claims u32::MAX entries, but the buffer is nowhere near
+        // big enough to back that - `data.len() >= region1_end` must fail
+        // before any allocation sized by n_entries happens.
+        let mut data = vec![0u8; HEADER_FIXED_SIZE];
+        data[4..8].copy_from_slice(START_NAME);
+        data[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        let dr = parse_disc_record(&[0u8; 60]).unwrap();
+        let new_map = NewMapIndex::empty_for_test(dr);
+        let result = decode_big_dir(&data, &new_map, 0).unwrap();
+        assert!(result.objects.is_empty());
+        assert!(result.anomalies.iter().any(|a| a.contains("truncated")));
     }
 }
