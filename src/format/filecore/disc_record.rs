@@ -50,6 +50,19 @@ impl DiscRecord {
         self.nzones_lo as u32 | ((self.nzones_hi as u32) << 8)
     }
 
+    /// `DiscRecord_SequenceSides_Flag` (guide §1.1/§2.1): true if this
+    /// disc's tracks are numbered sequentially (all of side 0, then all of
+    /// side 1), false if interleaved (side 0 and side 1 alternate per
+    /// track). *Not* implied by map type despite the correlation described
+    /// in §1.1 - old-map floppies (which have no disc record at all) are
+    /// sequential by convention, and new-map discs are interleaved by
+    /// convention, but the guide is explicit that a new-map disc's actual
+    /// ordering must be read from this bit, not assumed. See
+    /// `format::filecore::mod::open` for where that matters.
+    pub fn sequential_track_order(&self) -> bool {
+        self.low_sector & 0x40 != 0
+    }
+
     pub fn is_old_map(&self) -> bool {
         self.idlen == 0
     }

@@ -116,6 +116,27 @@ impl<S: SectorSource> FileCoreFs<S> {
                     .disc_record
                     .clone()
                     .expect("new-map detection always sets disc_record");
+                // Every new-map disc address this backend computes (zone
+                // map, directory extents, file extents) assumes
+                // interleaved track ordering, matching how new-map media
+                // is conventionally formatted (guide §1.1) - and every real
+                // disc tested against confirms that assumption. But the
+                // guide is explicit that this is a convention, not a
+                // structural guarantee, and that the actual ordering must
+                // be read from this flag on a new-map disc. Refuse rather
+                // than silently extract wrong bytes for the untested case;
+                // implementing the translation (parameterising
+                // `sml_geometry.rs` by `sectors_per_track`/`heads` instead
+                // of a hardcoded S/M/L table) would need a real sample to
+                // verify against, which none of the media available during
+                // development exhibits this flag.
+                if dr.sequential_track_order() {
+                    return Err(FcError::Unsupported(
+                        "this disc uses sequential track ordering (DiscRecord_SequenceSides_Flag set) \
+                         on a new-map format; only the conventional interleaved ordering is supported"
+                            .into(),
+                    ));
+                }
                 let new_map = map_new::read_new_map(&mut source, &dr)?;
                 let sharing_unit = dr.sharing_unit();
                 let root_extents = resolve_root_dir(&dr, detection.dir_type, &new_map, sharing_unit)?;
@@ -210,5 +231,28 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{NewMapConfig, build_new_map_disc};
+
+    #[test]
+    fn refuses_new_map_disc_with_sequence_sides_flag_set() {
+        let cfg = NewMapConfig::default();
+        let mut image = build_new_map_disc(vec![], &cfg);
+        // `detect()` reads the disc record directly from absolute offset
+        // 0x04 when there's no boot block (this synthetic image has none) -
+        // low_sector is byte 8 of the record, so 0x04+8 = 0x0C. This must
+        // fail before `read_new_map` ever runs, so it doesn't need (and
+        // deliberately skips) fixing up the zone's `ZoneCheck` byte.
+        image.bytes[0x0C] |= 0x40; // DiscRecord_SequenceSides_Flag
+        match FileCoreFs::open(image.cursor()) {
+            Err(FcError::Unsupported(msg)) => assert!(msg.contains("sequential"), "{msg}"),
+            Err(e) => panic!("expected Unsupported, got a different error: {e}"),
+            Ok(_) => panic!("expected Unsupported, got Ok"),
+        }
     }
 }
