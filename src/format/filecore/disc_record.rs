@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn geometry_mismatch_detects_only_geometry_fields() {
-        let mut a = sample_bytes();
+        let a = sample_bytes();
         let mut b = sample_bytes();
         b[4] = 11; // same idlen? no - idlen is byte 4; change it to differ
         let dr_a = parse_disc_record(&a).unwrap();

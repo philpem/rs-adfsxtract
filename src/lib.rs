@@ -17,4 +17,7 @@ pub mod testutil;
 mod real_media_tests;
 
 #[cfg(test)]
+mod reference_media_tests;
+
+#[cfg(test)]
 mod scenario_tests;
