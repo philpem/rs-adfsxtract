@@ -62,7 +62,11 @@ pub fn walk_and_extract<FS: FileSystem>(
     let mut visited: HashSet<Vec<(u64, u64)>> = HashSet::new();
 
     while let Some((dir_obj, host_dir, riscos_path)) = stack.pop() {
-        let fingerprint: Vec<(u64, u64)> = dir_obj.extents.iter().map(|e| (e.disc_addr, e.len)).collect();
+        let fingerprint: Vec<(u64, u64)> = dir_obj
+            .extents
+            .iter()
+            .map(|e| (e.disc_addr, e.len))
+            .collect();
         if !fingerprint.is_empty() && !visited.insert(fingerprint) {
             log.push(LogEntry::Warning {
                 message: format!("directory cycle detected at {riscos_path}, skipping"),
@@ -102,7 +106,9 @@ pub fn walk_and_extract<FS: FileSystem>(
             }
         } else {
             for a in &listing.anomalies {
-                log.push(LogEntry::Warning { message: format!("{riscos_path}: {a}") });
+                log.push(LogEntry::Warning {
+                    message: format!("{riscos_path}: {a}"),
+                });
             }
         }
 
@@ -114,7 +120,15 @@ pub fn walk_and_extract<FS: FileSystem>(
             if obj.is_directory {
                 stack.push((obj, host_child, riscos_child));
             } else {
-                extract_file(fs, &obj, &host_child, &riscos_child, opts, log, &mut summary)?;
+                extract_file(
+                    fs,
+                    &obj,
+                    &host_child,
+                    &riscos_child,
+                    opts,
+                    log,
+                    &mut summary,
+                )?;
             }
         }
     }
@@ -164,7 +178,9 @@ fn extract_file<FS: FileSystem>(
     }
 
     if total_len > 0 && good_bytes == 0 {
-        log.push(LogEntry::SkippedWhollyBad { path: riscos_path.to_string() });
+        log.push(LogEntry::SkippedWhollyBad {
+            path: riscos_path.to_string(),
+        });
         summary.files_skipped += 1;
         return Ok(());
     }
@@ -250,7 +266,10 @@ fn extract_file<FS: FileSystem>(
         writeln!(inf_file, "{}", build_inf_line(&fields))?;
     }
 
-    log.push(LogEntry::Extracted { path: riscos_path.to_string(), bytes: written });
+    log.push(LogEntry::Extracted {
+        path: riscos_path.to_string(),
+        bytes: written,
+    });
     summary.files_extracted += 1;
     summary.total_bytes += written;
     Ok(())

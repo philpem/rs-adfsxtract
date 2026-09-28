@@ -31,5 +31,9 @@ pub trait FileSystem {
     /// its bytes so a caller can cross-reference bad-sector ranges (e.g.
     /// from a ddrescue mapfile) without this trait needing to know about
     /// that concern itself.
-    fn read_object(&mut self, obj: &Object, sink: &mut dyn FnMut(u64, &[u8]) -> Result<()>) -> Result<()>;
+    fn read_object(
+        &mut self,
+        obj: &Object,
+        sink: &mut dyn FnMut(u64, &[u8]) -> Result<()>,
+    ) -> Result<()>;
 }

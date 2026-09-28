@@ -59,7 +59,10 @@ pub fn build_inf_line(fields: &InfFields) -> String {
         s.push_str(&format!(" CRC32={crc:08X}"));
     }
     if let Some(secs) = fields.datetime_unix_secs {
-        s.push_str(&format!(" DATETIME={}", crate::util::format_inf_datetime(secs)));
+        s.push_str(&format!(
+            " DATETIME={}",
+            crate::util::format_inf_datetime(secs)
+        ));
     }
     s
 }

@@ -118,7 +118,11 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
     Ok(DiscReport {
         filesystem: "DFS",
         map_type: "n/a",
-        dir_type: if fs.double_sided { "double-sided" } else { "single-sided" },
+        dir_type: if fs.double_sided {
+            "double-sided"
+        } else {
+            "single-sided"
+        },
         disc_name: Some(disc_name),
         disc_id: None,
         disc_size: Some(total_sectors * 256),
@@ -157,7 +161,14 @@ impl DiscReport {
             lines.push(format!("Boot option:     {bo}"));
         }
         lines.push(format!("Root title:      {}", self.root_title));
-        lines.push(format!("Boot block:      {}", if self.boot_block_present { "present" } else { "absent" }));
+        lines.push(format!(
+            "Boot block:      {}",
+            if self.boot_block_present {
+                "present"
+            } else {
+                "absent"
+            }
+        ));
         if let Some(ok) = self.boot_block_checksum_ok {
             lines.push(format!("Boot block ok:   {ok}"));
         }

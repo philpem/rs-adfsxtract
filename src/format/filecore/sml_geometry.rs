@@ -29,9 +29,18 @@ impl SmlGeometry {
     /// disc size for this format.
     pub fn from_total_sectors(total_sectors: u64) -> Self {
         match total_sectors {
-            640 => Self { tracks_per_side: 40, heads: 1 },
-            1280 => Self { tracks_per_side: 80, heads: 1 },
-            2560 => Self { tracks_per_side: 80, heads: 2 },
+            640 => Self {
+                tracks_per_side: 40,
+                heads: 1,
+            },
+            1280 => Self {
+                tracks_per_side: 80,
+                heads: 1,
+            },
+            2560 => Self {
+                tracks_per_side: 80,
+                heads: 2,
+            },
             _ => Self {
                 tracks_per_side: (total_sectors / SML_SECTORS_PER_TRACK).max(1),
                 heads: 1,
@@ -68,7 +77,10 @@ impl SmlGeometry {
 
             let phys_sector = self.physical_sector(logical_sector);
             let phys_addr = phys_sector * SML_SECTOR_SIZE + offset_in_sector;
-            extents.push(Extent { disc_addr: phys_addr, len: chunk_len });
+            extents.push(Extent {
+                disc_addr: phys_addr,
+                len: chunk_len,
+            });
 
             addr += chunk_len;
             remaining -= chunk_len;
@@ -81,10 +93,11 @@ fn merge_adjacent(extents: Vec<Extent>) -> Vec<Extent> {
     let mut out: Vec<Extent> = Vec::new();
     for e in extents {
         if let Some(last) = out.last_mut()
-            && last.disc_addr + last.len == e.disc_addr {
-                last.len += e.len;
-                continue;
-            }
+            && last.disc_addr + last.len == e.disc_addr
+        {
+            last.len += e.len;
+            continue;
+        }
         out.push(e);
     }
     out
@@ -98,7 +111,13 @@ mod tests {
     fn track0_is_unaffected() {
         let geom = SmlGeometry::from_total_sectors(2560); // L
         let extents = geom.translate(2 * 256, 5 * 256); // root dir: sectors 2-6
-        assert_eq!(extents, vec![Extent { disc_addr: 2 * 256, len: 5 * 256 }]);
+        assert_eq!(
+            extents,
+            vec![Extent {
+                disc_addr: 2 * 256,
+                len: 5 * 256
+            }]
+        );
     }
 
     #[test]
@@ -107,7 +126,13 @@ mod tests {
         // sector 26 (track 1) has real content at physical sector 42.
         let geom = SmlGeometry::from_total_sectors(2560); // L: 80 tracks, 2 heads
         let extents = geom.translate(26 * 256, 104);
-        assert_eq!(extents, vec![Extent { disc_addr: 42 * 256, len: 104 }]);
+        assert_eq!(
+            extents,
+            vec![Extent {
+                disc_addr: 42 * 256,
+                len: 104
+            }]
+        );
     }
 
     #[test]
@@ -118,8 +143,20 @@ mod tests {
         let len = 4 * 256;
         let extents = geom.translate(start, len);
         assert_eq!(extents.len(), 2, "{extents:?}");
-        assert_eq!(extents[0], Extent { disc_addr: 15 * 256, len: 256 });
+        assert_eq!(
+            extents[0],
+            Extent {
+                disc_addr: 15 * 256,
+                len: 256
+            }
+        );
         // track1 sectors 0,1,2 -> physical sector = 0 + (1*2+0)*16 = 32
-        assert_eq!(extents[1], Extent { disc_addr: 32 * 256, len: 3 * 256 });
+        assert_eq!(
+            extents[1],
+            Extent {
+                disc_addr: 32 * 256,
+                len: 3 * 256
+            }
+        );
     }
 }

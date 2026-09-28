@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use crate::format::dfs::geometry::DfsGeometry;
-use crate::format::filecore::checksums::{ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold, zone_check};
+use crate::format::filecore::checksums::{
+    ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold, zone_check,
+};
 use crate::format::filecore::dir_old;
 use crate::model::filetype;
 use crate::model::object::ATTR_DIRECTORY;
@@ -24,23 +26,49 @@ pub struct SynthFile {
 
 impl SynthFile {
     pub fn plain(name: &str, content: &[u8]) -> Self {
-        Self { name: name.to_string(), load: 0x8000, exec: 0x8000, attrs: 0x03, content: content.to_vec() }
+        Self {
+            name: name.to_string(),
+            load: 0x8000,
+            exec: 0x8000,
+            attrs: 0x03,
+            content: content.to_vec(),
+        }
     }
 
     pub fn typed(name: &str, filetype: u16, unix_secs: i64, content: &[u8]) -> Self {
-        let (load, exec) = filetype::encode(filetype, RiscOsTimestamp { unix_secs, nanos: 0 });
-        Self { name: name.to_string(), load, exec, attrs: 0x03, content: content.to_vec() }
+        let (load, exec) = filetype::encode(
+            filetype,
+            RiscOsTimestamp {
+                unix_secs,
+                nanos: 0,
+            },
+        );
+        Self {
+            name: name.to_string(),
+            load,
+            exec,
+            attrs: 0x03,
+            content: content.to_vec(),
+        }
     }
 }
 
 pub enum SynthEntry {
     File(SynthFile),
-    Dir { name: String, attrs: u32, children: Vec<SynthEntry> },
+    Dir {
+        name: String,
+        attrs: u32,
+        children: Vec<SynthEntry>,
+    },
 }
 
 impl SynthEntry {
     pub fn dir(name: &str, children: Vec<SynthEntry>) -> Self {
-        SynthEntry::Dir { name: name.to_string(), attrs: 0x03, children }
+        SynthEntry::Dir {
+            name: name.to_string(),
+            attrs: 0x03,
+            children,
+        }
     }
 }
 
@@ -126,9 +154,20 @@ fn allocate_objects(
                 *next_id += 1;
                 let len = f.content.len();
                 all_objects.push((id, f.content));
-                result.push(ChildMeta { name: f.name, load: f.load, exec: f.exec, attrs: f.attrs, fragment_id: id, content_len: len });
+                result.push(ChildMeta {
+                    name: f.name,
+                    load: f.load,
+                    exec: f.exec,
+                    attrs: f.attrs,
+                    fragment_id: id,
+                    content_len: len,
+                });
             }
-            SynthEntry::Dir { name, attrs, children } => {
+            SynthEntry::Dir {
+                name,
+                attrs,
+                children,
+            } => {
                 let child_meta = allocate_objects(children, next_id, big_dirs, all_objects);
                 let data = if big_dirs {
                     serialize_big_dir(&name, &child_meta)
@@ -139,7 +178,14 @@ fn allocate_objects(
                 *next_id += 1;
                 let len = data.len();
                 all_objects.push((id, data));
-                result.push(ChildMeta { name, load: 0, exec: 0, attrs: attrs | ATTR_DIRECTORY, fragment_id: id, content_len: len });
+                result.push(ChildMeta {
+                    name,
+                    load: 0,
+                    exec: 0,
+                    attrs: attrs | ATTR_DIRECTORY,
+                    fragment_id: id,
+                    content_len: len,
+                });
             }
         }
     }
@@ -159,7 +205,11 @@ fn serialize_new_dir(name: &str, children: &[ChildMeta], validation: &[u8; 4]) -
         buf[off + 0x0A..off + 0x0E].copy_from_slice(&child.load.to_le_bytes());
         buf[off + 0x0E..off + 0x12].copy_from_slice(&child.exec.to_le_bytes());
         buf[off + 0x12..off + 0x16].copy_from_slice(&(child.content_len as u32).to_le_bytes());
-        let sin = if child.content_len == 0 { 0u32 } else { child.fragment_id << 8 };
+        let sin = if child.content_len == 0 {
+            0u32
+        } else {
+            child.fragment_id << 8
+        };
         buf[off + 0x16] = (sin & 0xFF) as u8;
         buf[off + 0x17] = ((sin >> 8) & 0xFF) as u8;
         buf[off + 0x18] = ((sin >> 16) & 0xFF) as u8;
@@ -172,12 +222,21 @@ fn serialize_new_dir(name: &str, children: &[ChildMeta], validation: &[u8; 4]) -
     let name_bytes = pad_to(encode_charset_str(name), tail.name.1);
     buf[tail.name.0..tail.name.0 + tail.name.1].copy_from_slice(&name_bytes);
     buf[tail.end_seq] = 1;
-    buf[tail.end_validation.0..tail.end_validation.0 + tail.end_validation.1].copy_from_slice(validation);
+    buf[tail.end_validation.0..tail.end_validation.0 + tail.end_validation.1]
+        .copy_from_slice(validation);
 
     let end_of_entries = dir_old::HEADER_SIZE + children.len() * dir_old::ENTRY_SIZE;
     let regions = [
-        ChecksumRegion { start: 0, end: end_of_entries, words_first: true },
-        ChecksumRegion { start: tail.tail_start + 1, end: tail.dir_len - 4, words_first: false },
+        ChecksumRegion {
+            start: 0,
+            end: end_of_entries,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail.tail_start + 1,
+            end: tail.dir_len - 4,
+            words_first: false,
+        },
     ];
     let checksum = dir_checksum_fold(dir_checksum_accumulate(&buf, &regions));
     buf[tail.check_byte] = checksum;
@@ -225,14 +284,19 @@ fn serialize_big_dir(name: &str, children: &[ChildMeta]) -> Vec<u8> {
     buf[16..20].copy_from_slice(&(children.len() as u32).to_le_bytes());
     buf[20..24].copy_from_slice(&(names_size as u32).to_le_bytes());
     buf[24..28].copy_from_slice(&0u32.to_le_bytes());
-    buf[HEADER_FIXED_SIZE..HEADER_FIXED_SIZE + dir_name_padded.len()].copy_from_slice(&dir_name_padded);
+    buf[HEADER_FIXED_SIZE..HEADER_FIXED_SIZE + dir_name_padded.len()]
+        .copy_from_slice(&dir_name_padded);
 
     for (i, child) in children.iter().enumerate() {
         let off = entries_start + i * ENTRY_SIZE;
         buf[off..off + 4].copy_from_slice(&child.load.to_le_bytes());
         buf[off + 4..off + 8].copy_from_slice(&child.exec.to_le_bytes());
         buf[off + 8..off + 12].copy_from_slice(&(child.content_len as u32).to_le_bytes());
-        let sin = if child.content_len == 0 { 0u32 } else { child.fragment_id << 8 };
+        let sin = if child.content_len == 0 {
+            0u32
+        } else {
+            child.fragment_id << 8
+        };
         buf[off + 12..off + 16].copy_from_slice(&sin.to_le_bytes());
         buf[off + 16..off + 20].copy_from_slice(&child.attrs.to_le_bytes());
         let (ptr, namelen) = name_meta[i];
@@ -247,8 +311,16 @@ fn serialize_big_dir(name: &str, children: &[ChildMeta]) -> Vec<u8> {
     buf[tail_start + 4] = 1;
 
     let regions = [
-        ChecksumRegion { start: 0, end: region1_end, words_first: true },
-        ChecksumRegion { start: tail_start, end: tail_start + 7, words_first: true },
+        ChecksumRegion {
+            start: 0,
+            end: region1_end,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail_start,
+            end: tail_start + 7,
+            words_first: true,
+        },
     ];
     let checksum = dir_checksum_fold(dir_checksum_accumulate(&buf, &regions));
     buf[tail_start + 7] = checksum;
@@ -338,7 +410,8 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
 
     let mut next_id = 3u32;
     let mut all_objects: Vec<(u32, Vec<u8>)> = Vec::new();
-    let root_children_meta = allocate_objects(root_children, &mut next_id, cfg.big_dirs, &mut all_objects);
+    let root_children_meta =
+        allocate_objects(root_children, &mut next_id, cfg.big_dirs, &mut all_objects);
     let root_data = if cfg.big_dirs {
         serialize_big_dir("$", &root_children_meta)
     } else {
@@ -390,7 +463,11 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
         addr as u32,
         &cfg.disc_name,
         if cfg.big_dirs { 1 } else { 0 },
-        if cfg.big_dirs { root_data.len() as u32 } else { 0 },
+        if cfg.big_dirs {
+            root_data.len() as u32
+        } else {
+            0
+        },
     );
 
     let mut zone0 = vec![0u8; sector_size];
@@ -421,7 +498,12 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
 /// (mirroring what §4.3's "extend, can't do in place" leaves behind).
 /// Returns the image plus the expected reassembled content, for the test
 /// to compare against.
-pub fn build_fragmented_file_disc(cfg: &NewMapConfig, part_a: &[u8], filler: &[u8], part_b: &[u8]) -> (BuiltImage, Vec<u8>) {
+pub fn build_fragmented_file_disc(
+    cfg: &NewMapConfig,
+    part_a: &[u8],
+    filler: &[u8],
+    part_b: &[u8],
+) -> (BuiltImage, Vec<u8>) {
     let sector_size = 1usize << cfg.log2_sector_size;
     let bpmb = 1u64 << cfg.log2_bpmb;
     let idlen = cfg.idlen as u32;
@@ -445,18 +527,29 @@ pub fn build_fragmented_file_disc(cfg: &NewMapConfig, part_a: &[u8], filler: &[u
     root[off + 0x18] = ((sin >> 16) & 0xFF) as u8;
     root[off + 0x19] = 0x03;
     let tail = dir_old::tail_layout(false);
-    root[tail.name.0..tail.name.0 + tail.name.1].copy_from_slice(&pad_to(encode_charset_str("$"), tail.name.1));
+    root[tail.name.0..tail.name.0 + tail.name.1]
+        .copy_from_slice(&pad_to(encode_charset_str("$"), tail.name.1));
     root[tail.end_seq] = 1;
     root[tail.end_validation.0..tail.end_validation.0 + 4].copy_from_slice(b"Hugo");
     let end_of_entries = dir_old::HEADER_SIZE + dir_old::ENTRY_SIZE;
     let regions = [
-        ChecksumRegion { start: 0, end: end_of_entries, words_first: true },
-        ChecksumRegion { start: tail.tail_start + 1, end: tail.dir_len - 4, words_first: false },
+        ChecksumRegion {
+            start: 0,
+            end: end_of_entries,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail.tail_start + 1,
+            end: tail.dir_len - 4,
+            words_first: false,
+        },
     ];
     root[tail.check_byte] = dir_checksum_fold(dir_checksum_accumulate(&root, &regions));
 
     let root_len = root.len() as u64;
-    let system_units = (2 * sector_size as u64 + root_len).div_ceil(bpmb).max(min_units);
+    let system_units = (2 * sector_size as u64 + root_len)
+        .div_ceil(bpmb)
+        .max(min_units);
     let mut addr = system_units * bpmb;
 
     let a_units = (part_a.len() as u64).div_ceil(bpmb).max(min_units);
@@ -472,7 +565,10 @@ pub fn build_fragmented_file_disc(cfg: &NewMapConfig, part_a: &[u8], filler: &[u
     let zone_spare: u64 = 32;
     let zone0_bits = (sector_size as u64 * 8) - zone_spare - 480;
     let used = system_units + a_units + filler_units + b_units;
-    assert!(used < zone0_bits, "synthetic fragmented-file image too small");
+    assert!(
+        used < zone0_bits,
+        "synthetic fragmented-file image too small"
+    );
     let free_units = zone0_bits - used;
 
     let mut bw = BitWriter::new();
@@ -524,7 +620,11 @@ pub fn build_fragmented_file_disc(cfg: &NewMapConfig, part_a: &[u8], filler: &[u
 pub fn build_old_map_disc(files: Vec<SynthFile>, small: bool, disc_name: &str) -> BuiltImage {
     use crate::format::filecore::checksums::old_map_checksum;
 
-    let dir_len = if small { dir_old::SMALL_DIR_SIZE } else { dir_old::LARGE_DIR_SIZE };
+    let dir_len = if small {
+        dir_old::SMALL_DIR_SIZE
+    } else {
+        dir_old::LARGE_DIR_SIZE
+    };
     let root_addr: u64 = if small { 0x200 } else { 0x400 };
     let mut next_addr_unit = (root_addr + dir_len as u64) / 256;
 
@@ -571,8 +671,16 @@ pub fn build_old_map_disc(files: Vec<SynthFile>, small: bool, disc_name: &str) -
 
     let end_of_entries = dir_old::HEADER_SIZE + files.len() * dir_old::ENTRY_SIZE;
     let regions = [
-        ChecksumRegion { start: 0, end: end_of_entries, words_first: true },
-        ChecksumRegion { start: tail.tail_start + 1, end: tail.dir_len - 4, words_first: false },
+        ChecksumRegion {
+            start: 0,
+            end: end_of_entries,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail.tail_start + 1,
+            end: tail.dir_len - 4,
+            words_first: false,
+        },
     ];
     root[tail.check_byte] = dir_checksum_fold(dir_checksum_accumulate(&root, &regions));
 
@@ -625,12 +733,29 @@ impl DfsFile {
     /// 16 bits free, bits 16-23 one of `0x00/0x55/0xAA/0xFF` (the only
     /// values the 2-bit hardware field can reproduce), bits 24-31 zero.
     pub fn plain(name: &str, content: &[u8]) -> Self {
-        Self { name: name.to_string(), dir_char: '$', locked: false, load: 0x1900, exec: 0x1900, content: content.to_vec() }
+        Self {
+            name: name.to_string(),
+            dir_char: '$',
+            locked: false,
+            load: 0x1900,
+            exec: 0x1900,
+            content: content.to_vec(),
+        }
     }
 
     pub fn in_dir(name: &str, dir_char: char, content: &[u8]) -> Self {
-        assert!(dir_char.is_ascii(), "test dir chars are kept ASCII for simplicity");
-        Self { name: name.to_string(), dir_char, locked: false, load: 0x1900, exec: 0x1900, content: content.to_vec() }
+        assert!(
+            dir_char.is_ascii(),
+            "test dir chars are kept ASCII for simplicity"
+        );
+        Self {
+            name: name.to_string(),
+            dir_char,
+            locked: false,
+            load: 0x1900,
+            exec: 0x1900,
+            content: content.to_vec(),
+        }
     }
 
     pub fn locked(mut self) -> Self {
@@ -647,7 +772,11 @@ pub struct DfsSideSpec {
 
 impl DfsSideSpec {
     pub fn new(title: &str, files: Vec<DfsFile>) -> Self {
-        Self { title: title.to_string(), boot_option: 0, files }
+        Self {
+            title: title.to_string(),
+            boot_option: 0,
+            files,
+        }
     }
 }
 
@@ -666,7 +795,13 @@ fn encode_2bit(high_byte: u8) -> u8 {
     }
 }
 
-fn write_logical(disc: &mut [u8], geometry: &DfsGeometry, side: u8, logical_addr: u64, data: &[u8]) {
+fn write_logical(
+    disc: &mut [u8],
+    geometry: &DfsGeometry,
+    side: u8,
+    logical_addr: u64,
+    data: &[u8],
+) {
     let extents = geometry.translate(side, logical_addr, data.len() as u64);
     let mut offset = 0usize;
     for e in extents {
@@ -690,7 +825,10 @@ fn place_side_files(spec: &DfsSideSpec) -> (Vec<PlacedFile<'_>>, u32) {
         let start_sector = next_sector;
         let len_sectors = (f.content.len() as u32).div_ceil(256).max(1);
         next_sector += len_sectors;
-        placed.push(PlacedFile { file: f, start_sector });
+        placed.push(PlacedFile {
+            file: f,
+            start_sector,
+        });
     }
     (placed, next_sector)
 }
@@ -699,7 +837,11 @@ fn encode_entry_info(f: &DfsFile, start_sector: u32) -> [u8; 8] {
     let length = f.content.len();
     assert!(length < (1 << 18), "DFS file length must fit in 18 bits");
     assert!(start_sector < 1024, "DFS start sector must fit in 10 bits");
-    assert_eq!(f.load >> 24, 0, "DFS load must fit in 24 bits (2-bit extension + 16-bit low word)");
+    assert_eq!(
+        f.load >> 24,
+        0,
+        "DFS load must fit in 24 bits (2-bit extension + 16-bit low word)"
+    );
     assert_eq!(f.exec >> 24, 0, "DFS exec must fit in 24 bits");
 
     let load_hi = encode_2bit(((f.load >> 16) & 0xFF) as u8);
@@ -741,7 +883,11 @@ fn write_side_catalogue(
     for (i, pf) in placed.iter().take(31).enumerate() {
         let off = 8 + i * 8;
         let mut name_field = [b' '; 7];
-        for (j, b) in encode_charset_str(&pf.file.name).into_iter().take(7).enumerate() {
+        for (j, b) in encode_charset_str(&pf.file.name)
+            .into_iter()
+            .take(7)
+            .enumerate()
+        {
             name_field[j] = b;
         }
         s0[off..off + 7].copy_from_slice(&name_field);
@@ -763,7 +909,11 @@ fn write_side_catalogue(
         for (i, pf) in extra.iter().enumerate() {
             let off = 8 + i * 8;
             let mut name_field = [b' '; 7];
-            for (j, b) in encode_charset_str(&pf.file.name).into_iter().take(7).enumerate() {
+            for (j, b) in encode_charset_str(&pf.file.name)
+                .into_iter()
+                .take(7)
+                .enumerate()
+            {
                 name_field[j] = b;
             }
             s2[off..off + 7].copy_from_slice(&name_field);
@@ -782,7 +932,10 @@ fn write_side_catalogue(
 /// skipped this would never exercise the track-boundary-split logic the way
 /// a real `.dsd` does.
 pub fn build_dfs_disc(sides: Vec<DfsSideSpec>) -> BuiltImage {
-    assert!((1..=2).contains(&sides.len()), "DFS images are single- or double-sided");
+    assert!(
+        (1..=2).contains(&sides.len()),
+        "DFS images are single- or double-sided"
+    );
     let double_sided = sides.len() == 2;
     let geometry = DfsGeometry { double_sided };
 
@@ -795,7 +948,11 @@ pub fn build_dfs_disc(sides: Vec<DfsSideSpec>) -> BuiltImage {
     }
 
     let total_sectors = max_logical_sectors;
-    let physical_sectors = if double_sided { total_sectors.div_ceil(10) * 20 } else { total_sectors };
+    let physical_sectors = if double_sided {
+        total_sectors.div_ceil(10) * 20
+    } else {
+        total_sectors
+    };
     let mut disc = vec![0u8; physical_sectors as usize * 256];
 
     for (side_idx, spec) in sides.iter().enumerate() {
@@ -823,7 +980,12 @@ mod tests {
         let image = build_new_map_disc(
             vec![
                 SynthEntry::File(SynthFile::plain("Fred", b"hello world")),
-                SynthEntry::File(SynthFile::typed("Data", 0xFFD, 1_700_000_000, b"typed content")),
+                SynthEntry::File(SynthFile::typed(
+                    "Data",
+                    0xFFD,
+                    1_700_000_000,
+                    b"typed content",
+                )),
             ],
             &cfg,
         );
@@ -885,9 +1047,15 @@ mod tests {
 
     #[test]
     fn big_dir_round_trip() {
-        let cfg = NewMapConfig { big_dirs: true, ..NewMapConfig::default() };
+        let cfg = NewMapConfig {
+            big_dirs: true,
+            ..NewMapConfig::default()
+        };
         let image = build_new_map_disc(
-            vec![SynthEntry::File(SynthFile::plain("LongFileName", b"big dir content"))],
+            vec![SynthEntry::File(SynthFile::plain(
+                "LongFileName",
+                b"big dir content",
+            ))],
             &cfg,
         );
         let mut fs = FileCoreFs::open(image.cursor()).unwrap();
@@ -903,7 +1071,10 @@ mod tests {
 
         let image = build_dfs_disc(vec![DfsSideSpec::new(
             "MYDISC",
-            vec![DfsFile::plain("BOOT", b"boot text"), DfsFile::in_dir("CODE", 'L', b"code bytes").locked()],
+            vec![
+                DfsFile::plain("BOOT", b"boot text"),
+                DfsFile::in_dir("CODE", 'L', b"code bytes").locked(),
+            ],
         )]);
         let mut fs = DfsFs::open(image.cursor()).unwrap();
         assert!(!fs.double_sided);
@@ -950,21 +1121,43 @@ mod tests {
         let root = fs.root().unwrap();
         let root_listing = fs.list(&root).unwrap();
         assert_eq!(root_listing.objects.len(), 2);
-        let side0_obj = root_listing.objects.iter().find(|o| o.name == "Side0").unwrap();
+        let side0_obj = root_listing
+            .objects
+            .iter()
+            .find(|o| o.name == "Side0")
+            .unwrap();
         let side0_listing = fs.list(side0_obj).unwrap();
-        assert!(!side0_listing.is_broken, "anomalies: {:?}", side0_listing.anomalies);
+        assert!(
+            !side0_listing.is_broken,
+            "anomalies: {:?}",
+            side0_listing.anomalies
+        );
 
-        let span = side0_listing.objects.iter().find(|o| o.name == "SPAN").unwrap();
-        assert!(span.extents.len() >= 2, "expected the track-crossing file to split into multiple extents");
+        let span = side0_listing
+            .objects
+            .iter()
+            .find(|o| o.name == "SPAN")
+            .unwrap();
+        assert!(
+            span.extents.len() >= 2,
+            "expected the track-crossing file to split into multiple extents"
+        );
         let mut collected = Vec::new();
         fs.read_object(span, &mut |_addr, chunk| {
             collected.extend_from_slice(chunk);
             Ok(())
         })
         .unwrap();
-        assert_eq!(collected, content, "reassembled bytes must match despite the track-boundary split");
+        assert_eq!(
+            collected, content,
+            "reassembled bytes must match despite the track-boundary split"
+        );
 
-        let side1_obj = root_listing.objects.iter().find(|o| o.name == "Side1").unwrap();
+        let side1_obj = root_listing
+            .objects
+            .iter()
+            .find(|o| o.name == "Side1")
+            .unwrap();
         let side1_listing = fs.list(side1_obj).unwrap();
         assert_eq!(side1_listing.objects.len(), 1);
         assert_eq!(side1_listing.objects[0].name, "OTHER");
@@ -974,7 +1167,9 @@ mod tests {
     fn dfs_watford_extension_round_trip() {
         use crate::format::dfs::DfsFs;
 
-        let files: Vec<DfsFile> = (0..40).map(|i| DfsFile::plain(&format!("F{i}"), b"x")).collect();
+        let files: Vec<DfsFile> = (0..40)
+            .map(|i| DfsFile::plain(&format!("F{i}"), b"x"))
+            .collect();
         let image = build_dfs_disc(vec![DfsSideSpec::new("WATFORD", files)]);
         let mut fs = DfsFs::open(image.cursor()).unwrap();
         let root = fs.root().unwrap();

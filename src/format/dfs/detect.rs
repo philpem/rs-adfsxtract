@@ -29,7 +29,9 @@ fn plausible_header(sector0: &[u8], sector1: &[u8]) -> bool {
 }
 
 pub fn detect(source: &mut dyn SectorSource) -> Result<DfsDetection> {
-    let ssd = DfsGeometry { double_sided: false };
+    let ssd = DfsGeometry {
+        double_sided: false,
+    };
     let s0 = read_sector(source, &ssd, 0, 0x000)?;
     let s1 = read_sector(source, &ssd, 0, 0x100)?;
     if !plausible_header(&s0, &s1) {
@@ -48,7 +50,11 @@ pub fn detect(source: &mut dyn SectorSource) -> Result<DfsDetection> {
     // contrast, has essentially no chance of a majority of random bytes
     // landing in-bounds.
     let side0 = read_catalogue(source, &ssd, 0)?;
-    let bad = side0.entries.iter().filter(|e| !e.in_bounds(side0.total_sectors)).count();
+    let bad = side0
+        .entries
+        .iter()
+        .filter(|e| !e.in_bounds(side0.total_sectors))
+        .count();
     if bad * 2 > side0.entries.len() {
         return Err(FcError::NotRecognised);
     }
@@ -88,7 +94,10 @@ mod tests {
     fn all_zero_image_is_single_sided_dfs() {
         let mut cursor = Cursor::new(vec![0u8; 4096]);
         let detection = detect(&mut cursor).expect("an all-zero, zero-file catalogue is valid DFS");
-        assert!(!detection.double_sided, "an all-zero side-1 probe must not be read as a real second side");
+        assert!(
+            !detection.double_sided,
+            "an all-zero side-1 probe must not be read as a real second side"
+        );
     }
 
     #[test]

@@ -32,7 +32,11 @@ fn header_bits(zone: usize) -> usize {
 /// extra 480 bits to its embedded 60-byte disc record copy.
 fn zone_bits(zone: usize, sector_size: u64, zone_spare: u64) -> u64 {
     let base = sector_size * 8 - zone_spare;
-    if zone == 0 { base.saturating_sub(480) } else { base }
+    if zone == 0 {
+        base.saturating_sub(480)
+    } else {
+        base
+    }
 }
 
 /// Cumulative allocation-unit base for each zone (guide §2.4): also used to
@@ -298,8 +302,9 @@ pub fn read_new_map(source: &mut dyn SectorSource, dr: &DiscRecord) -> Result<Ne
         .iter()
         .fold(0u8, |acc, z| acc ^ parse_zone_header(z).cross_check);
 
-    let zone0_disc_record = crate::format::filecore::disc_record::parse_disc_record(&zones_raw[0][4..64])
-        .unwrap_or_else(|_| dr.clone());
+    let zone0_disc_record =
+        crate::format::filecore::disc_record::parse_disc_record(&zones_raw[0][4..64])
+            .unwrap_or_else(|_| dr.clone());
 
     let records = decode_all_zones(&zones_raw, dr);
     let fragment_index = build_index(&records, dr);
@@ -318,7 +323,13 @@ mod tests {
     use super::*;
     use crate::format::filecore::disc_record::parse_disc_record;
 
-    fn make_dr(sector_size_log2: u8, idlen: u8, bpmb_log2: u8, nzones: u8, zone_spare: u16) -> DiscRecord {
+    fn make_dr(
+        sector_size_log2: u8,
+        idlen: u8,
+        bpmb_log2: u8,
+        nzones: u8,
+        zone_spare: u16,
+    ) -> DiscRecord {
         let mut b = vec![0u8; 60];
         b[0] = sector_size_log2;
         b[4] = idlen;
@@ -328,7 +339,13 @@ mod tests {
         parse_disc_record(&b).unwrap()
     }
 
-    fn write_fragment(bits: &mut Vec<u8>, bit_pos: &mut usize, id: u32, idlen: u32, total_units: u64) {
+    fn write_fragment(
+        bits: &mut Vec<u8>,
+        bit_pos: &mut usize,
+        id: u32,
+        idlen: u32,
+        total_units: u64,
+    ) {
         for i in 0..idlen {
             set_bit(bits, *bit_pos, ((id >> i) & 1) as u8);
             *bit_pos += 1;

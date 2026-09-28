@@ -97,28 +97,49 @@ mod tests {
     #[test]
     fn trims_across_multiple_extents() {
         let extents = vec![
-            Extent { disc_addr: 0, len: 10 },
-            Extent { disc_addr: 100, len: 10 },
+            Extent {
+                disc_addr: 0,
+                len: 10,
+            },
+            Extent {
+                disc_addr: 100,
+                len: 10,
+            },
         ];
         let trimmed = trim_extents_from(extents, 15);
         assert_eq!(
             trimmed,
-            vec![Extent { disc_addr: 105, len: 5 }]
+            vec![Extent {
+                disc_addr: 105,
+                len: 5
+            }]
         );
     }
 
     #[test]
     fn truncates_to_exact_length() {
         let extents = vec![
-            Extent { disc_addr: 0, len: 10 },
-            Extent { disc_addr: 100, len: 10 },
+            Extent {
+                disc_addr: 0,
+                len: 10,
+            },
+            Extent {
+                disc_addr: 100,
+                len: 10,
+            },
         ];
         let truncated = truncate_extents(extents, 15);
         assert_eq!(
             truncated,
             vec![
-                Extent { disc_addr: 0, len: 10 },
-                Extent { disc_addr: 100, len: 5 },
+                Extent {
+                    disc_addr: 0,
+                    len: 10
+                },
+                Extent {
+                    disc_addr: 100,
+                    len: 5
+                },
             ]
         );
     }

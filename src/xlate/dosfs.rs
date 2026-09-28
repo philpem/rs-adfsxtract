@@ -76,7 +76,11 @@ pub fn leafname_to_riscos(host_name: &str) -> String {
 /// Appends the `,fff` hex filetype suffix (guide §3.3's date-stamp rule)
 /// when present, matching DIM's `GetWindowsFilename` convention. Directories
 /// and untyped load/exec files get no suffix.
-pub fn append_filetype_suffix(host_name: &str, filetype: Option<u16>, is_directory: bool) -> String {
+pub fn append_filetype_suffix(
+    host_name: &str,
+    filetype: Option<u16>,
+    is_directory: bool,
+) -> String {
     match (filetype, is_directory) {
         (Some(ft), false) => format!("{host_name},{ft:03x}"),
         _ => host_name.to_string(),
@@ -124,7 +128,10 @@ mod tests {
 
     #[test]
     fn filetype_suffix_rules() {
-        assert_eq!(append_filetype_suffix("File", Some(0xFEB), false), "File,feb");
+        assert_eq!(
+            append_filetype_suffix("File", Some(0xFEB), false),
+            "File,feb"
+        );
         assert_eq!(append_filetype_suffix("Dir", Some(0xFEB), true), "Dir");
         assert_eq!(append_filetype_suffix("Plain", None, false), "Plain");
     }

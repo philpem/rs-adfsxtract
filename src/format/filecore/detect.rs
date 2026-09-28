@@ -70,22 +70,29 @@ pub fn detect(source: &mut dyn SectorSource) -> Result<Detection> {
     let mut bb_raw = [0u8; 512];
     source.read_at(BOOT_BLOCK_ADDR, &mut bb_raw)?;
     if let Ok(bb) = parse_boot_block(&bb_raw)
-        && looks_plausible(&bb.disc_record) {
-            return Ok(from_disc_record(bb.disc_record.clone(), Some(bb)));
-        }
+        && looks_plausible(&bb.disc_record)
+    {
+        return Ok(from_disc_record(bb.disc_record.clone(), Some(bb)));
+    }
 
     let mut dr_bytes = [0u8; DISC_RECORD_SIZE];
     source.read_at(0x04, &mut dr_bytes)?;
     if let Ok(dr) = parse_disc_record(&dr_bytes)
-        && looks_plausible(&dr) && !dr.is_old_map() {
-            return Ok(from_disc_record(dr, None));
-        }
+        && looks_plausible(&dr)
+        && !dr.is_old_map()
+    {
+        return Ok(from_disc_record(dr, None));
+    }
 
     Err(FcError::NotRecognised)
 }
 
 fn from_disc_record(dr: DiscRecord, boot_block: Option<BootBlock>) -> Detection {
-    let map_type = if dr.is_old_map() { MapType::Old } else { MapType::New };
+    let map_type = if dr.is_old_map() {
+        MapType::Old
+    } else {
+        MapType::New
+    };
     let dir_type = if dr.is_old_map() {
         DirType::Old
     } else if dr.is_big_dir() {

@@ -41,7 +41,10 @@ impl DfsGeometry {
         }
         if !self.double_sided {
             debug_assert_eq!(side, 0, "single-sided image has only side 0");
-            return vec![Extent { disc_addr: logical_addr, len }];
+            return vec![Extent {
+                disc_addr: logical_addr,
+                len,
+            }];
         }
 
         let mut extents = Vec::new();
@@ -57,7 +60,10 @@ impl DfsGeometry {
 
             let phys_sector = Self::physical_sector(side, logical_sector);
             let phys_addr = phys_sector * DFS_SECTOR_SIZE + offset_in_sector;
-            extents.push(Extent { disc_addr: phys_addr, len: chunk_len });
+            extents.push(Extent {
+                disc_addr: phys_addr,
+                len: chunk_len,
+            });
 
             addr += chunk_len;
             remaining -= chunk_len;
@@ -86,9 +92,17 @@ mod tests {
 
     #[test]
     fn single_sided_is_identity() {
-        let geom = DfsGeometry { double_sided: false };
+        let geom = DfsGeometry {
+            double_sided: false,
+        };
         let extents = geom.translate(0, 0x0E00, 512);
-        assert_eq!(extents, vec![Extent { disc_addr: 0x0E00, len: 512 }]);
+        assert_eq!(
+            extents,
+            vec![Extent {
+                disc_addr: 0x0E00,
+                len: 512
+            }]
+        );
     }
 
     #[test]
@@ -96,7 +110,13 @@ mod tests {
         let geom = DfsGeometry { double_sided: true };
         // sector 0, side 0: physical sector 0, matches logical.
         let extents = geom.translate(0, 0, 256);
-        assert_eq!(extents, vec![Extent { disc_addr: 0, len: 256 }]);
+        assert_eq!(
+            extents,
+            vec![Extent {
+                disc_addr: 0,
+                len: 256
+            }]
+        );
     }
 
     #[test]
@@ -105,8 +125,20 @@ mod tests {
         // (a whole-sector read from logical addr 0) is at physical byte
         // 0xA00, and sector 1 (logical addr 0x100) at 0xB00.
         let geom = DfsGeometry { double_sided: true };
-        assert_eq!(geom.translate(1, 0x000, 256), vec![Extent { disc_addr: 0xA00, len: 256 }]);
-        assert_eq!(geom.translate(1, 0x100, 256), vec![Extent { disc_addr: 0xB00, len: 256 }]);
+        assert_eq!(
+            geom.translate(1, 0x000, 256),
+            vec![Extent {
+                disc_addr: 0xA00,
+                len: 256
+            }]
+        );
+        assert_eq!(
+            geom.translate(1, 0x100, 256),
+            vec![Extent {
+                disc_addr: 0xB00,
+                len: 256
+            }]
+        );
     }
 
     #[test]
@@ -114,8 +146,20 @@ mod tests {
         // The Watford 62-file extension catalogue (logical sectors 2/3) on
         // side 1 of a real .dsd was found at absolute 0xC00/0xD00.
         let geom = DfsGeometry { double_sided: true };
-        assert_eq!(geom.translate(1, 0x200, 256), vec![Extent { disc_addr: 0xC00, len: 256 }]);
-        assert_eq!(geom.translate(1, 0x300, 256), vec![Extent { disc_addr: 0xD00, len: 256 }]);
+        assert_eq!(
+            geom.translate(1, 0x200, 256),
+            vec![Extent {
+                disc_addr: 0xC00,
+                len: 256
+            }]
+        );
+        assert_eq!(
+            geom.translate(1, 0x300, 256),
+            vec![Extent {
+                disc_addr: 0xD00,
+                len: 256
+            }]
+        );
     }
 
     #[test]
@@ -127,9 +171,21 @@ mod tests {
         let len = 4 * DFS_SECTOR_SIZE;
         let extents = geom.translate(0, start, len);
         assert_eq!(extents.len(), 2, "{extents:?}");
-        assert_eq!(extents[0], Extent { disc_addr: 9 * DFS_SECTOR_SIZE, len: DFS_SECTOR_SIZE });
+        assert_eq!(
+            extents[0],
+            Extent {
+                disc_addr: 9 * DFS_SECTOR_SIZE,
+                len: DFS_SECTOR_SIZE
+            }
+        );
         // track1 side0 sectors 0,1,2 -> physical sector = 0 + (1*2+0)*10 = 20
-        assert_eq!(extents[1], Extent { disc_addr: 20 * DFS_SECTOR_SIZE, len: 3 * DFS_SECTOR_SIZE });
+        assert_eq!(
+            extents[1],
+            Extent {
+                disc_addr: 20 * DFS_SECTOR_SIZE,
+                len: 3 * DFS_SECTOR_SIZE
+            }
+        );
     }
 
     #[test]
@@ -140,8 +196,20 @@ mod tests {
         let extents = geom.translate(1, start, len);
         assert_eq!(extents.len(), 2, "{extents:?}");
         // track0 side1 sector9 -> physical sector = 9 + (0*2+1)*10 = 19
-        assert_eq!(extents[0], Extent { disc_addr: 19 * DFS_SECTOR_SIZE, len: DFS_SECTOR_SIZE });
+        assert_eq!(
+            extents[0],
+            Extent {
+                disc_addr: 19 * DFS_SECTOR_SIZE,
+                len: DFS_SECTOR_SIZE
+            }
+        );
         // track1 side1 sectors 0,1,2 -> physical sector = 0 + (1*2+1)*10 = 30
-        assert_eq!(extents[1], Extent { disc_addr: 30 * DFS_SECTOR_SIZE, len: 3 * DFS_SECTOR_SIZE });
+        assert_eq!(
+            extents[1],
+            Extent {
+                disc_addr: 30 * DFS_SECTOR_SIZE,
+                len: 3 * DFS_SECTOR_SIZE
+            }
+        );
     }
 }

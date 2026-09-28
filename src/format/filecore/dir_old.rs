@@ -5,12 +5,15 @@
 //! `--on-broken-directory` policy using that report.
 
 use crate::error::Result;
-use crate::format::filecore::checksums::{ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold};
+use crate::format::filecore::checksums::{
+    ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold,
+};
 use crate::format::filecore::detect::MapType;
 use crate::format::filecore::map_new::NewMapIndex;
 use crate::format::filecore::sml_geometry::SmlGeometry;
 use crate::model::object::{
-    ATTR_DIRECTORY, ATTR_LOCKED, ATTR_OWNER_READ, ATTR_OWNER_WRITE, Extent, Object, truncate_extents,
+    ATTR_DIRECTORY, ATTR_LOCKED, ATTR_OWNER_READ, ATTR_OWNER_WRITE, Extent, Object,
+    truncate_extents,
 };
 
 pub const SMALL_DIR_SIZE: usize = 0x500;
@@ -134,7 +137,10 @@ fn resolve_entry_extents(
             let logical_addr = raw_sin as u64 * 256;
             let extents = match sml_geometry {
                 Some(geom) => geom.translate(logical_addr, length),
-                None => vec![Extent { disc_addr: logical_addr, len: length }],
+                None => vec![Extent {
+                    disc_addr: logical_addr,
+                    len: length,
+                }],
             };
             truncate_extents(extents, length)
         }
@@ -175,7 +181,11 @@ pub fn decode_dir(
     sml_geometry: Option<&SmlGeometry>,
 ) -> Result<DirDecodeResult> {
     let mut anomalies = Vec::new();
-    let expected_len = if small { SMALL_DIR_SIZE } else { LARGE_DIR_SIZE };
+    let expected_len = if small {
+        SMALL_DIR_SIZE
+    } else {
+        LARGE_DIR_SIZE
+    };
     if data.len() < expected_len {
         // Every offset below (header, entries, tail) assumes a
         // full-size buffer; a resolved extent shorter than that - a
@@ -188,7 +198,11 @@ pub fn decode_dir(
             "directory data truncated: expected {expected_len} bytes, got {}",
             data.len()
         ));
-        return Ok(DirDecodeResult { is_broken: true, anomalies, ..Default::default() });
+        return Ok(DirDecodeResult {
+            is_broken: true,
+            anomalies,
+            ..Default::default()
+        });
     }
 
     let header_seq = data[0];
@@ -199,7 +213,11 @@ pub fn decode_dir(
     // into the tail, `used_entries` stays at `max_entries` - a directory
     // at exactly its structural capacity legitimately has no room for a
     // terminator, so that's the correct count, not a sign of corruption.
-    let max_entries = if small { SMALL_MAX_ENTRIES } else { LARGE_MAX_ENTRIES };
+    let max_entries = if small {
+        SMALL_MAX_ENTRIES
+    } else {
+        LARGE_MAX_ENTRIES
+    };
     let mut used_entries = max_entries;
     for i in 0..max_entries {
         let off = HEADER_SIZE + i * ENTRY_SIZE;
@@ -233,11 +251,18 @@ pub fn decode_dir(
         let extents = if is_directory {
             match map_type {
                 MapType::Old => {
-                    let dir_len = if small { SMALL_DIR_SIZE as u64 } else { LARGE_DIR_SIZE as u64 };
+                    let dir_len = if small {
+                        SMALL_DIR_SIZE as u64
+                    } else {
+                        LARGE_DIR_SIZE as u64
+                    };
                     let logical_addr = sin_raw as u64 * 256;
                     match sml_geometry {
                         Some(geom) => geom.translate(logical_addr, dir_len),
-                        None => vec![Extent { disc_addr: logical_addr, len: dir_len }],
+                        None => vec![Extent {
+                            disc_addr: logical_addr,
+                            len: dir_len,
+                        }],
                     }
                 }
                 MapType::New => {
@@ -292,8 +317,9 @@ pub fn decode_dir(
     }
 
     let seq_match = data.get(tail.end_seq).copied() == Some(header_seq);
-    let validation_match =
-        data.get(tail.end_validation.0..tail.end_validation.0 + tail.end_validation.1) == Some(header_validation);
+    let validation_match = data
+        .get(tail.end_validation.0..tail.end_validation.0 + tail.end_validation.1)
+        == Some(header_validation);
     if !seq_match {
         anomalies.push(format!(
             "sequence number mismatch: header={header_seq:#04x} tail={:#04x}",
@@ -306,8 +332,16 @@ pub fn decode_dir(
 
     let end_of_entries = HEADER_SIZE + used_entries * ENTRY_SIZE;
     let regions = [
-        ChecksumRegion { start: 0, end: end_of_entries, words_first: true },
-        ChecksumRegion { start: tail.tail_start + 1, end: tail.dir_len - 4, words_first: false },
+        ChecksumRegion {
+            start: 0,
+            end: end_of_entries,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail.tail_start + 1,
+            end: tail.dir_len - 4,
+            words_first: false,
+        },
     ];
     let checksum = dir_checksum_fold(dir_checksum_accumulate(data, &regions));
     let check_byte_ok = data.get(tail.check_byte).copied() == Some(checksum);
@@ -320,7 +354,10 @@ pub fn decode_dir(
 
     let (title_off, title_len) = tail.title;
     let title_bytes = &data[title_off..title_off + title_len];
-    let title_end = title_bytes.iter().position(|&b| b == 0).unwrap_or(title_bytes.len());
+    let title_end = title_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(title_bytes.len());
     let title = crate::xlate::charset::decode(&title_bytes[..title_end]);
 
     let (name_off, name_len) = tail.name;

@@ -57,7 +57,11 @@ fn bb1_ssd_regression() {
     let cat = &fs.catalogues[0];
     assert_eq!(cat.entries.len(), 10);
     assert_eq!(cat.total_sectors, 800);
-    let boot = cat.entries.iter().find(|e| e.name == "!BOOT").expect("!BOOT entry present");
+    let boot = cat
+        .entries
+        .iter()
+        .find(|e| e.name == "!BOOT")
+        .expect("!BOOT entry present");
     assert_eq!(boot.start_sector, 141);
     assert_eq!(boot.length, 11);
 
@@ -91,14 +95,27 @@ fn mikejames_dsd_regression() {
     // sharper test than a symmetric disc would be: a geometry bug that
     // silently reads side 0's catalogue twice would still pass a
     // both-sides-equal test but fail this one.
-    assert_eq!(fs.catalogues[0].entries.len(), 0, "side 0 has no files on this real disc");
+    assert_eq!(
+        fs.catalogues[0].entries.len(),
+        0,
+        "side 0 has no files on this real disc"
+    );
     assert_eq!(fs.catalogues[1].entries.len(), 27, "side 1 has 27 files");
 
     let root = fs.root().unwrap();
     let root_list = fs.list(&root).unwrap();
-    let side1 = root_list.objects.iter().find(|o| o.name == "Side1").unwrap().clone();
+    let side1 = root_list
+        .objects
+        .iter()
+        .find(|o| o.name == "Side1")
+        .unwrap()
+        .clone();
     let side1_list = fs.list(&side1).unwrap();
-    let pge164 = side1_list.objects.iter().find(|o| o.name == "pge164").expect("pge164 present");
+    let pge164 = side1_list
+        .objects
+        .iter()
+        .find(|o| o.name == "pge164")
+        .expect("pge164 present");
     assert!(
         pge164.extents.len() >= 2,
         "pge164 is known (from independent verification) to cross a real track boundary; \
@@ -110,6 +127,9 @@ fn mikejames_dsd_regression() {
     let summary = walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
     assert_eq!(summary.files_extracted, 27, "log: {:?}", log.entries);
     for name in ["pge210", "pge208", "pge164", "pge112", "pge132"] {
-        assert!(dir.path().join("Side1").join(name).exists(), "missing Side1/{name}");
+        assert!(
+            dir.path().join("Side1").join(name).exists(),
+            "missing Side1/{name}"
+        );
     }
 }

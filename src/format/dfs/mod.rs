@@ -72,14 +72,21 @@ fn side_object(side: u8) -> Object {
 impl<S: SectorSource> DfsFs<S> {
     pub fn open(mut source: S) -> Result<Self> {
         let detection = detect::detect(&mut source)?;
-        let geometry = DfsGeometry { double_sided: detection.double_sided };
+        let geometry = DfsGeometry {
+            double_sided: detection.double_sided,
+        };
 
         let mut catalogues = vec![read_catalogue(&mut source, &geometry, 0)?];
         if detection.double_sided {
             catalogues.push(read_catalogue(&mut source, &geometry, 1)?);
         }
 
-        Ok(Self { source, geometry, double_sided: detection.double_sided, catalogues })
+        Ok(Self {
+            source,
+            geometry,
+            double_sided: detection.double_sided,
+            catalogues,
+        })
     }
 
     pub fn into_source(self) -> S {
@@ -116,7 +123,12 @@ impl<S: SectorSource> DfsFs<S> {
         }
 
         let is_broken = !anomalies.is_empty();
-        ListResult { objects, title: cat.title.clone(), is_broken, anomalies }
+        ListResult {
+            objects,
+            title: cat.title.clone(),
+            is_broken,
+            anomalies,
+        }
     }
 }
 
@@ -142,13 +154,22 @@ impl<S: SectorSource> FileSystem for DfsFs<S> {
         if self.double_sided {
             let title = self.catalogues[0].title.clone();
             let objects = (0..self.catalogues.len() as u8).map(side_object).collect();
-            return Ok(ListResult { objects, title, is_broken: false, anomalies: vec![] });
+            return Ok(ListResult {
+                objects,
+                title,
+                is_broken: false,
+                anomalies: vec![],
+            });
         }
 
         Ok(self.list_side_files(0))
     }
 
-    fn read_object(&mut self, obj: &Object, sink: &mut dyn FnMut(u64, &[u8]) -> Result<()>) -> Result<()> {
+    fn read_object(
+        &mut self,
+        obj: &Object,
+        sink: &mut dyn FnMut(u64, &[u8]) -> Result<()>,
+    ) -> Result<()> {
         const CHUNK: usize = 256 * 1024;
         for extent in &obj.extents {
             let mut remaining = extent.len;

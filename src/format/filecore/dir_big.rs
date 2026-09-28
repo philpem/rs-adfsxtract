@@ -3,7 +3,9 @@
 //! `value >> 8`, sharing offset = `value & 0xFF`.
 
 use crate::error::Result;
-use crate::format::filecore::checksums::{ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold};
+use crate::format::filecore::checksums::{
+    ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold,
+};
 use crate::format::filecore::map_new::NewMapIndex;
 use crate::model::object::{ATTR_DIRECTORY, Extent, Object, truncate_extents};
 
@@ -39,7 +41,12 @@ fn resolve_big_sin(
         return Vec::new();
     }
     let sharing_offset = sin & 0xFF;
-    match crate::format::filecore::map_new::resolve_fragment(new_map, fragment_id, sharing_offset, sharing_unit) {
+    match crate::format::filecore::map_new::resolve_fragment(
+        new_map,
+        fragment_id,
+        sharing_offset,
+        sharing_unit,
+    ) {
         Some(extents) => {
             if fragment_id > 0xFFFF {
                 anomalies.push(format!(
@@ -49,13 +56,19 @@ fn resolve_big_sin(
             truncate_extents(extents, length)
         }
         None => {
-            anomalies.push(format!("{name}: fragment id {fragment_id} not found in zone map"));
+            anomalies.push(format!(
+                "{name}: fragment id {fragment_id} not found in zone map"
+            ));
             Vec::new()
         }
     }
 }
 
-pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> Result<BigDirDecodeResult> {
+pub fn decode_big_dir(
+    data: &[u8],
+    new_map: &NewMapIndex,
+    sharing_unit: u64,
+) -> Result<BigDirDecodeResult> {
     let mut anomalies = Vec::new();
 
     if data.len() < HEADER_FIXED_SIZE {
@@ -70,7 +83,11 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
             "directory data too short to contain a header: expected at least {HEADER_FIXED_SIZE} bytes, got {}",
             data.len()
         ));
-        return Ok(BigDirDecodeResult { is_broken: true, anomalies, ..Default::default() });
+        return Ok(BigDirDecodeResult {
+            is_broken: true,
+            anomalies,
+            ..Default::default()
+        });
     }
 
     let start_seq = data[0];
@@ -86,7 +103,8 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
     let parent_raw = u32::from_le_bytes(data[24..28].try_into().unwrap());
 
     let name_padded = pad4(name_len + 1);
-    let name_bytes = &data[HEADER_FIXED_SIZE..HEADER_FIXED_SIZE + name_len.min(data.len() - HEADER_FIXED_SIZE)];
+    let name_bytes =
+        &data[HEADER_FIXED_SIZE..HEADER_FIXED_SIZE + name_len.min(data.len() - HEADER_FIXED_SIZE)];
     let title = crate::xlate::charset::decode(name_bytes);
 
     let entries_start = HEADER_FIXED_SIZE + name_padded;
@@ -115,7 +133,9 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
             let obj_name_ptr = u32::from_le_bytes(entry[24..28].try_into().unwrap()) as usize;
 
             let name = if heap_start + obj_name_ptr + obj_name_len <= data.len() {
-                crate::xlate::charset::decode(&data[heap_start + obj_name_ptr..heap_start + obj_name_ptr + obj_name_len])
+                crate::xlate::charset::decode(
+                    &data[heap_start + obj_name_ptr..heap_start + obj_name_ptr + obj_name_len],
+                )
             } else {
                 anomalies.push(format!("entry {i}: name heap offset out of range"));
                 String::new()
@@ -125,15 +145,29 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
             let extents = if is_directory {
                 let fragment_id = sin_raw >> 8;
                 let sharing_offset = sin_raw & 0xFF;
-                match crate::format::filecore::map_new::resolve_fragment(new_map, fragment_id, sharing_offset, sharing_unit) {
+                match crate::format::filecore::map_new::resolve_fragment(
+                    new_map,
+                    fragment_id,
+                    sharing_offset,
+                    sharing_unit,
+                ) {
                     Some(e) => e,
                     None => {
-                        anomalies.push(format!("{name}: subdirectory fragment id {fragment_id} not found in zone map"));
+                        anomalies.push(format!(
+                            "{name}: subdirectory fragment id {fragment_id} not found in zone map"
+                        ));
                         Vec::new()
                     }
                 }
             } else {
-                resolve_big_sin(sin_raw, length, new_map, sharing_unit, &mut anomalies, &name)
+                resolve_big_sin(
+                    sin_raw,
+                    length,
+                    new_map,
+                    sharing_unit,
+                    &mut anomalies,
+                    &name,
+                )
             };
 
             objects.push(Object {
@@ -171,8 +205,16 @@ pub fn decode_big_dir(data: &[u8], new_map: &NewMapIndex, sharing_unit: u64) -> 
         }
 
         let regions = [
-            ChecksumRegion { start: 0, end: region1_end, words_first: true },
-            ChecksumRegion { start: tail_start, end: tail_start + 7, words_first: true },
+            ChecksumRegion {
+                start: 0,
+                end: region1_end,
+                words_first: true,
+            },
+            ChecksumRegion {
+                start: tail_start,
+                end: tail_start + 7,
+                words_first: true,
+            },
         ];
         let checksum = dir_checksum_fold(dir_checksum_accumulate(data, &regions));
         check_byte_ok = data.get(tail_start + 7).copied() == Some(checksum);

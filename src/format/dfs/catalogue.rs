@@ -66,7 +66,9 @@ fn decode_entries(names: &[u8], info: &[u8], count: usize) -> Vec<DfsEntry> {
         let raw_dir = n[7];
         let locked = raw_dir & 0x80 != 0;
         let dir_char = charset::decode_byte(raw_dir & 0x7F);
-        let name = charset::decode(&n[0..7]).trim_end_matches(['\0', ' ']).to_string();
+        let name = charset::decode(&n[0..7])
+            .trim_end_matches(['\0', ' '])
+            .to_string();
 
         let e = &info[i * ENTRY_SIZE..i * ENTRY_SIZE + ENTRY_SIZE];
         let load_lo = u16::from_le_bytes([e[0], e[1]]) as u32;
@@ -100,7 +102,11 @@ pub(crate) fn read_sector(
     logical_addr: u64,
 ) -> Result<[u8; SECTOR_SIZE]> {
     let extents = geometry.translate(side, logical_addr, SECTOR_SIZE as u64);
-    debug_assert_eq!(extents.len(), 1, "a whole-sector read never crosses a track boundary");
+    debug_assert_eq!(
+        extents.len(),
+        1,
+        "a whole-sector read never crosses a track boundary"
+    );
     let mut buf = [0u8; SECTOR_SIZE];
     source.read_at(extents[0].disc_addr, &mut buf)?;
     Ok(buf)
@@ -108,7 +114,11 @@ pub(crate) fn read_sector(
 
 /// Reads and decodes one side's catalogue (standard 31-entry block, plus the
 /// Watford 62-file extension block if its signature is present).
-pub fn read_catalogue(source: &mut dyn SectorSource, geometry: &DfsGeometry, side: u8) -> Result<DfsCatalogue> {
+pub fn read_catalogue(
+    source: &mut dyn SectorSource,
+    geometry: &DfsGeometry,
+    side: u8,
+) -> Result<DfsCatalogue> {
     let s0 = read_sector(source, geometry, side, 0x000)?;
     let s1 = read_sector(source, geometry, side, 0x100)?;
     let s2 = read_sector(source, geometry, side, 0x200)?;
@@ -116,7 +126,11 @@ pub fn read_catalogue(source: &mut dyn SectorSource, geometry: &DfsGeometry, sid
 
     // A title shorter than 12 chars is padded with NUL (confirmed on real
     // media - not spaces, unlike the per-entry name field below).
-    let title = format!("{}{}", charset::decode(&s0[0..8]), charset::decode(&s1[0..4]));
+    let title = format!(
+        "{}{}",
+        charset::decode(&s0[0..8]),
+        charset::decode(&s1[0..4])
+    );
     let title = title.trim_end_matches(['\0', ' ']).to_string();
 
     let cycle_bcd = s1[4];
@@ -134,17 +148,32 @@ pub fn read_catalogue(source: &mut dyn SectorSource, geometry: &DfsGeometry, sid
     let watford = s2[0..8] == [0xAA; 8] && s3[0..4] == [0x00; 4];
     if watford {
         let extra_count = (s3[5] / 8) as usize;
-        entries.extend(decode_entries(&s2[8..], &s3[8..], extra_count.min(ENTRIES_PER_BLOCK)));
+        entries.extend(decode_entries(
+            &s2[8..],
+            &s3[8..],
+            extra_count.min(ENTRIES_PER_BLOCK),
+        ));
     }
 
-    Ok(DfsCatalogue { title, cycle_bcd, boot_option, total_sectors, entries, watford })
+    Ok(DfsCatalogue {
+        title,
+        cycle_bcd,
+        boot_option,
+        total_sectors,
+        entries,
+        watford,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_side0(title8: &[u8; 8], title4: &[u8; 4], entries: &[(&str, u8, [u8; 8])]) -> ([u8; SECTOR_SIZE], [u8; SECTOR_SIZE]) {
+    fn make_side0(
+        title8: &[u8; 8],
+        title4: &[u8; 4],
+        entries: &[(&str, u8, [u8; 8])],
+    ) -> ([u8; SECTOR_SIZE], [u8; SECTOR_SIZE]) {
         let mut s0 = [0u8; SECTOR_SIZE];
         let mut s1 = [0u8; SECTOR_SIZE];
         s0[0..8].copy_from_slice(title8);
@@ -167,7 +196,11 @@ mod tests {
     #[test]
     fn decodes_setpage_entry_matching_real_media() {
         // Entry bytes for "SETPAGE" from a real BB1.ssd: 00 0e 2b 80 14 00 cc 8c
-        let entries = decode_entries(b"SETPAGE$", &[0x00, 0x0e, 0x2b, 0x80, 0x14, 0x00, 0xcc, 0x8c], 1);
+        let entries = decode_entries(
+            b"SETPAGE$",
+            &[0x00, 0x0e, 0x2b, 0x80, 0x14, 0x00, 0xcc, 0x8c],
+            1,
+        );
         let e = &entries[0];
         assert_eq!(e.name, "SETPAGE");
         assert_eq!(e.dir_char, '$');
@@ -181,7 +214,11 @@ mod tests {
     #[test]
     fn decodes_boot_entry_with_no_extension_bits() {
         // "!BOOT" from the same disc: 00 00 0b 00 00 8d 00 0e
-        let entries = decode_entries(b"!BOOT  $", &[0x00, 0x00, 0x0b, 0x00, 0x00, 0x8d, 0x00, 0x0e], 1);
+        let entries = decode_entries(
+            b"!BOOT  $",
+            &[0x00, 0x00, 0x0b, 0x00, 0x00, 0x8d, 0x00, 0x0e],
+            1,
+        );
         let e = &entries[0];
         assert_eq!(e.name, "!BOOT");
         assert_eq!(e.dir_char, '$');
@@ -205,13 +242,19 @@ mod tests {
         let (s0, s1) = make_side0(
             b"BBC TAPE",
             b"\0\0\0\0",
-            &[("!BOOT", b'$', [0x00, 0x00, 0x0b, 0x00, 0x00, 0x8d, 0x00, 0x0e])],
+            &[(
+                "!BOOT",
+                b'$',
+                [0x00, 0x00, 0x0b, 0x00, 0x00, 0x8d, 0x00, 0x0e],
+            )],
         );
         let mut image = vec![0u8; SECTOR_SIZE * 4];
         image[0..SECTOR_SIZE].copy_from_slice(&s0);
         image[SECTOR_SIZE..SECTOR_SIZE * 2].copy_from_slice(&s1);
         let mut cursor = std::io::Cursor::new(image);
-        let geometry = DfsGeometry { double_sided: false };
+        let geometry = DfsGeometry {
+            double_sided: false,
+        };
         let cat = read_catalogue(&mut cursor, &geometry, 0).unwrap();
         assert_eq!(cat.title, "BBC TAPE");
         assert_eq!(cat.total_sectors, 800);
@@ -238,7 +281,9 @@ mod tests {
         image[info_off..info_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
         let mut cursor = std::io::Cursor::new(image);
-        let geometry = DfsGeometry { double_sided: false };
+        let geometry = DfsGeometry {
+            double_sided: false,
+        };
         let cat = read_catalogue(&mut cursor, &geometry, 0).unwrap();
         assert!(cat.watford);
         assert_eq!(cat.entries.len(), 1);
@@ -257,7 +302,11 @@ mod tests {
             start_sector: 799,
         };
         assert!(!e.in_bounds(800));
-        let ok = DfsEntry { start_sector: 100, length: 256, ..e };
+        let ok = DfsEntry {
+            start_sector: 100,
+            length: 256,
+            ..e
+        };
         assert!(ok.in_bounds(800));
     }
 }
