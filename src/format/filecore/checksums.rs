@@ -38,8 +38,8 @@ pub fn old_map_checksum(sector: &[u8]) -> u8 {
 pub fn zone_check(sector: &[u8]) -> u8 {
     let mut sum: u32 = 0;
     let mut carry: u32 = 0;
-    for chunk in sector.chunks_exact(4).rev() {
-        let word = u32::from_le_bytes(chunk.try_into().unwrap());
+    for chunk in sector.as_chunks::<4>().0.iter().rev() {
+        let word = u32::from_le_bytes(*chunk);
         let (s1, c1) = sum.overflowing_add(word);
         let (s2, c2) = s1.overflowing_add(carry);
         sum = s2;

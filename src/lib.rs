@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod diagnostics;
 pub mod error;
 pub mod extract;
 pub mod format;
@@ -6,6 +7,7 @@ pub mod io;
 pub mod model;
 pub mod sidecar;
 pub mod util;
+pub mod verify;
 pub mod xlate;
 
 #[cfg(test)]

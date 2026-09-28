@@ -6,7 +6,11 @@ use crate::extract::walker::BrokenDirPolicy;
 use crate::io::rescue::BadSectorPolicy;
 
 #[derive(Parser)]
-#[command(name = "acornfsextract", about = "Extracts files from Acorn FileCore (ADFS) and DFS disc images", version)]
+#[command(
+    name = "acornfsextract",
+    about = "Extracts files from Acorn FileCore (ADFS) and DFS disc images",
+    version
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -20,6 +24,16 @@ pub enum Command {
         image: PathBuf,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
+    },
+    /// Walks the whole disc tree and reports structural damage as typed
+    /// diagnostics without writing anything.
+    Verify {
+        image: PathBuf,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Write typed diagnostics (JSONL) to this file instead of stderr.
+        #[arg(long)]
+        diagnostics: Option<PathBuf>,
     },
     /// Extracts every file from the image into a directory tree.
     Extract {

@@ -127,6 +127,57 @@ impl DiscRecord {
             .unwrap_or(self.disc_name.len());
         crate::xlate::charset::decode(&self.disc_name[..end])
     }
+
+    /// The fields that must agree between the boot-block copy and the zone-0
+    /// copy before the map can be decoded. Anything they disagree on is a
+    /// geometry problem (guide §A.4): we keep boot-block geometry because it
+    /// was already used to locate the zone-0 copy, but a mismatch is worth
+    /// reporting.
+    pub fn geometry_mismatches(&self, other: &Self) -> Vec<(&'static str, String, String)> {
+        let mut out = Vec::new();
+        macro_rules! note {
+            ($field:literal, $a:expr, $b:expr) => {
+                if $a != $b {
+                    out.push(($field, $a.to_string(), $b.to_string()));
+                }
+            };
+        }
+        note!(
+            "log2_sector_size",
+            self.log2_sector_size,
+            other.log2_sector_size
+        );
+        note!(
+            "sectors_per_track",
+            self.sectors_per_track,
+            other.sectors_per_track
+        );
+        note!("heads", self.heads, other.heads);
+        note!("idlen", self.idlen, other.idlen);
+        note!("log2_bpmb", self.log2_bpmb, other.log2_bpmb);
+        note!("low_sector", self.low_sector, other.low_sector);
+        note!("nzones", self.nzones(), other.nzones());
+        note!("zone_spare", self.zone_spare, other.zone_spare);
+        note!("disc_size", self.disc_size_bytes(), other.disc_size_bytes());
+        out
+    }
+
+    /// Overlays the fields that the zone-0 copy is authoritative for onto
+    /// this record. The zone-0 copy lives beside the map and carries the
+    /// newer extended fields on real media even where the boot-block copy
+    /// has them zeroed (guide §A.4). Geometry is deliberately left untouched:
+    /// it was already used to locate and size the map.
+    pub fn merge_zone0_metadata(&mut self, zone0: &Self) {
+        self.disc_id = zone0.disc_id;
+        self.disc_name = zone0.disc_name;
+        self.disc_type = zone0.disc_type;
+        self.boot_option = zone0.boot_option;
+        self.share_size = zone0.share_size;
+        self.big_flag = zone0.big_flag;
+        self.format_version = zone0.format_version;
+        self.root_size = zone0.root_size;
+        self.root_dir = zone0.root_dir;
+    }
 }
 
 pub fn parse_disc_record(input: &[u8]) -> Result<DiscRecord> {
@@ -255,5 +306,41 @@ mod tests {
         bytes[5] = 200; // log2_bpmb, would overflow `1u32 << log2_bpmb`
         let dr = parse_disc_record(&bytes).unwrap();
         assert!(!looks_plausible(&dr));
+    }
+
+    #[test]
+    fn geometry_mismatch_detects_only_geometry_fields() {
+        let mut a = sample_bytes();
+        let mut b = sample_bytes();
+        b[4] = 11; // same idlen? no - idlen is byte 4; change it to differ
+        let dr_a = parse_disc_record(&a).unwrap();
+        let dr_b = parse_disc_record(&b).unwrap();
+        // b == a except byte 4 (idlen).
+        let mismatches = dr_a.geometry_mismatches(&dr_b);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].0, "idlen");
+    }
+
+    #[test]
+    fn merge_takes_authoritative_zone0_metadata_but_not_geometry() {
+        let mut boot_bytes = sample_bytes();
+        // boot-block copy: geometry set, extended fields zeroed.
+        boot_bytes[0x14..0x16].copy_from_slice(&0u16.to_le_bytes()); // disc_id
+        boot_bytes[0x2C..0x30].copy_from_slice(&0u32.to_le_bytes()); // format_version
+        let mut boot = parse_disc_record(&boot_bytes).unwrap();
+
+        let mut zone0 = parse_disc_record(&sample_bytes()).unwrap();
+        zone0.disc_id = 0x1234;
+        zone0.format_version = 1;
+        zone0.root_size = 0x8000;
+
+        boot.merge_zone0_metadata(&zone0);
+
+        assert_eq!(boot.disc_id, 0x1234);
+        assert!(boot.is_big_dir());
+        assert_eq!(boot.root_size, 0x8000);
+        // Geometry is untouched by the merge.
+        assert_eq!(boot.sector_size(), 512);
+        assert_eq!(boot.nzones(), 4);
     }
 }
