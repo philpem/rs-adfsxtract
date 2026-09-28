@@ -14,6 +14,9 @@ pub mod xlate;
 pub mod testutil;
 
 #[cfg(test)]
+mod arcology_corpus_tests;
+
+#[cfg(test)]
 mod real_media_tests;
 
 #[cfg(test)]
