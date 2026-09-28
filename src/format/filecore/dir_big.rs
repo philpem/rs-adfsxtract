@@ -1,8 +1,6 @@
-//! Big directory (E+/F+/G) decode (guide §3.4). The 4-byte widened SIN's
-//! bit layout is not documented by the guide; this uses the hypothesis
-//! empirically verified against a real RISC OS 4 disc (`/tmp/ro4-hd4.hdf`,
-//! see SPEC-ERRATA.md): fragment ID = `value >> 8`, sharing offset =
-//! `value & 0xFF` - the same split as the 3-byte SIN, just widened.
+//! Big directory (E+/F+/G) decode (guide §3.4). The 4-byte widened SIN uses
+//! the same split as the 3-byte form, just widened: fragment ID =
+//! `value >> 8`, sharing offset = `value & 0xFF`.
 
 use crate::error::Result;
 use crate::format::filecore::checksums::{ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold};
@@ -45,8 +43,7 @@ fn resolve_big_sin(
         Some(extents) => {
             if fragment_id > 0xFFFF {
                 anomalies.push(format!(
-                    "{name}: big-dir fragment id {fragment_id:#x} exceeds 16 bits - \
-                     widened-SIN interpretation is unverified in this range (see SPEC-ERRATA.md)"
+                    "{name}: big-dir fragment id {fragment_id:#x} exceeds 16 bits"
                 ));
             }
             truncate_extents(extents, length)

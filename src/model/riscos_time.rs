@@ -1,8 +1,5 @@
-//! 40-bit centisecond timestamp (guide §3.3 + Glossary, reconciled): epoch
-//! 1900-01-01 00:00:00. Load's low byte is the *high* byte of the count
-//! (bits 39-32); exec holds the low 32 bits (bits 31-0) - not "the low 8
-//! bits of exec", as the guide's Glossary entry for "Exec address"
-//! ambiguously implies (see SPEC-ERRATA.md).
+//! 40-bit centisecond timestamp (guide §3.3): epoch 1900-01-01 00:00:00.
+//! Load's low byte carries bits 39-32 of the count; exec carries bits 31-0.
 
 /// Seconds between 1900-01-01 00:00:00 and the Unix epoch (1970-01-01).
 pub const EPOCH_DIFF_SECONDS: i64 = 2_208_988_800;

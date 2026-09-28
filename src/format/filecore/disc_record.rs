@@ -10,92 +10,67 @@ use crate::format::filecore::checksums::boot_block_checksum;
 /// The FileCore disc record (guide §2.1), always parsed as the full 60-byte
 /// extended form; on pre-3.6 media the extended fields simply read as zero.
 ///
-/// Fields marked "not consumed elsewhere" are parsed because they're part
-/// of the fixed on-disk layout (skipping them would misalign every field
-/// after), but nothing in this extractor's read-only, translation-only
-/// pipeline needs their value - they're kept and documented anyway so the
-/// struct is a complete, accurate description of the real structure, not
-/// just the subset this tool happens to act on. `low_sector` was the one
-/// exception found the hard way: parsed-but-unused turned out to mean
-/// "should have been read" rather than "genuinely irrelevant" - see
-/// `sequential_track_order` below and `format::filecore::mod::open`.
+/// Every field is read because it is part of the fixed on-disk layout, even
+/// where extraction never acts on the value - skipping one would misalign
+/// the rest. `low_sector` is the one exception that is read for its meaning
+/// rather than for alignment: bit 6 selects sequential track ordering
+/// (guide §1.1, and `map_new`/`mod::open` rely on it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscRecord {
     /// Log₂ of sector size in bytes (8 = 256, 9 = 512, 10 = 1024, ...).
     pub log2_sector_size: u8,
-    /// Sectors per track (physical geometry) - not consumed elsewhere;
-    /// extraction resolves file locations via the zone map/old free-space
-    /// map, not by walking physical geometry directly.
+    /// Sectors per track (physical geometry).
     pub sectors_per_track: u8,
-    /// Number of disc surfaces - but *n-1* on old ADFS floppy formats
-    /// (`hdr/FileCore`). Not consumed elsewhere (old-map floppies have no
-    /// disc record at all; new-map extraction doesn't need it).
+    /// Number of disc surfaces - *n-1* on old ADFS floppy formats.
     pub heads: u8,
-    /// Encoding density (0 = hard disc, 1 = single, 2 = double, 3 =
-    /// double+, 4 = quad, 8 = octal). Not consumed elsewhere - informational
-    /// only for this tool's purposes.
+    /// Encoding density (0 = hard disc, 1-4/8 = floppy densities).
     pub density: u8,
-    /// Fragment ID width in bits, i.e. how many low bits of each SIN select
-    /// a fragment rather than a sharing offset. 0 on old-map discs (which
-    /// have no disc record and so no real `idlen` - `is_old_map()` treats a
-    /// parsed value of 0 as the old-map signal for that reason). Max 15
-    /// (new map), 19 (big map), or 21 (RISC OS 5).
+    /// Fragment ID width in bits - how many low bits of a SIN select a
+    /// fragment rather than a sharing offset. 0 on old-map media, which the
+    /// caller treats as the old-map signal via `is_old_map()`. Max 15 (new
+    /// map), 19 (big map), or 21 (RISC OS 5).
     pub idlen: u8,
     /// Log₂ of bytes per map bit - the allocation unit size (`bpmb()`).
-    /// Real media only ever uses 7-10; see `looks_plausible`'s bound on
-    /// this field before it's used as a shift amount.
     pub log2_bpmb: u8,
-    /// Track-to-track sector skew for head positioning (a write-time/
-    /// formatting concern). Not consumed elsewhere - extraction never
-    /// seeks a physical drive, only reads a disc image file.
+    /// Track-to-track sector skew for head positioning (formatting-time).
     pub skew: u8,
     /// Boot action (0 = none, 1 = load, 2 = run, 3 = exec).
     pub boot_option: u8,
-    /// Bits 0-5 (`DiscRecord_LowSector_Mask`): lowest sector number on a
-    /// track - not consumed elsewhere. Bit 6
-    /// (`DiscRecord_SequenceSides_Flag`) is read via
-    /// [`sequential_track_order`](DiscRecord::sequential_track_order). Bit
-    /// 7 (`DiscRecord_DoubleStep_Flag`, double stepping) is not consumed
-    /// elsewhere.
+    /// Bits 0-5: lowest sector number on a track. Bit 6
+    /// (`DiscRecord_SequenceSides_Flag`) selects sequential track ordering.
+    /// Bit 7: double stepping.
     pub low_sector: u8,
     /// Low byte of the zone count; combine with `nzones_hi` via `nzones()`.
     pub nzones_lo: u8,
-    /// Bits in each zone after zone 0's 32-bit header that aren't
-    /// allocation-map bits (trailing slack, guide §3.1/SPEC-ERRATA item 2 -
-    /// the Glossary's "leading slack" reading is wrong).
+    /// Bits in each zone sector (after zone 0's header) that are not
+    /// allocation-map bits - trailing slack, not leading (guide §2.1, §3.1).
     pub zone_spare: u16,
     /// Disc address of the root directory (guide §2.3).
     pub root_dir: u32,
     /// Total disc size in bytes, low 32 bits (`disc_size_bytes()` combines
     /// this with `disc_size_2` for discs over 4 GB).
     pub disc_size: u32,
-    /// Cycle ID, incremented on each write to the disc structure. Not
-    /// consumed elsewhere - this tool never writes.
+    /// Cycle ID, incremented on each write to the disc structure.
     pub disc_id: u16,
     /// Space-padded disc name; decode via `disc_name_str()`.
     pub disc_name: [u8; 10],
-    /// Filing system number. Not consumed elsewhere - always FileCore in
-    /// context here.
+    /// Filing-system identifier of the disc (always FileCore in context).
     pub disc_type: u32,
     /// High 32 bits of disc size, for discs over 4 GB.
     pub disc_size_2: u32,
     /// Log₂ of sharing granularity in sectors; combined with sector size
     /// via `sharing_unit()` to resolve a SIN's non-zero sharing offset.
     pub share_size: u8,
-    /// Bit 0: set if the RISC OS partition is over 512 MB
-    /// (`DiscRecord_BigMap_BigFlag`). Bits 1-7 reserved. Not consumed
-    /// elsewhere - `is_big_dir()` uses `format_version` instead, which is
-    /// the more direct signal for this tool's purposes.
+    /// Bit 0: large/extended disc-record form. Big-directory selection uses
+    /// `format_version` instead, which is the direct signal here.
     pub big_flag: u8,
     /// High byte of the zone count; see `nzones_lo`/`nzones()`.
     pub nzones_hi: u8,
-    /// Disc format version (`DiscRecord_BigDir_DiscVersion`): 0 = old/new
-    /// directories, 1 = big directories. See `is_big_dir()`.
+    /// Disc format version: 0 = old/new directories, 1 = big directories.
+    /// See `is_big_dir()`.
     pub format_version: u32,
-    /// Root directory size in bytes (`DiscRecord_BigDir_RootDirSize`),
-    /// meaningful only when `format_version` selects big directories -
-    /// only big directories store their own size here rather than it being
-    /// implied by a fixed format (`SMALL_DIR_SIZE`/`LARGE_DIR_SIZE`).
+    /// Root directory size in bytes, meaningful only when `format_version`
+    /// selects big directories (only they are variable-length).
     pub root_size: u32,
 }
 

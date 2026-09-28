@@ -30,27 +30,11 @@ pub fn old_map_checksum(sector: &[u8]) -> u8 {
     (sum & 0xFF) as u8
 }
 
-/// New-map zone `ZoneCheck` (guide §A.1). **Neither of the guide's own two
-/// descriptions of this algorithm reproduces real media** - see
-/// SPEC-ERRATA.md item 14. What actually matches (verified against
-/// `adfs800E.adf`, `adfs1600F.adf`, and both sample hard discs) is a
-/// literal transcription of the ARM assembly's real behaviour:
-///
-/// - Words are summed **backward** (last word of the sector first), per
-///   the assembly's pre-decrement load (`LDR R2, [R1, #-4]!` starting from
-///   the end of the sector) - order is *not* interchangeable here, because:
-/// - Each addition is a plain 32-bit `ADCS` (add-with-carry into a 32-bit
-///   register, carry chained from one iteration's overflow into the next
-///   iteration's addition) and the **final carry-out is simply discarded**
-///   after the loop, rather than folded back in. This is a standard
-///   multi-word add-with-carry chain, *not* ones'-complement/end-around-
-///   carry reduction (there is no post-loop fold in the assembly), and
-///   because the final carry is dropped rather than reduced, the result
-///   depends on summation order - the very last addition performed is the
-///   one whose overflow (if any) goes nowhere.
-///
-/// Subtracts the existing check byte's contribution, folds 32->8 via two
-/// *sequential* XOR-shifts.
+/// New-map zone `ZoneCheck` (guide §A.1): add-with-carry running sum of the
+/// sector's 32-bit words in reverse order, with the accumulated carry
+/// discarded; then subtract the stored check byte and fold the 32-bit
+/// result to 8 bits via two sequential XOR-shifts. Summation order matters
+/// and a byte-at-a-time or one's-complement pass will not reproduce it.
 pub fn zone_check(sector: &[u8]) -> u8 {
     let mut sum: u32 = 0;
     let mut carry: u32 = 0;

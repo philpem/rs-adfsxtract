@@ -1,23 +1,12 @@
-//! S/M/L (old-map, old-directory) physical geometry translation.
+//! S/M/L (old-map, old-directory) geometry translation.
 //!
-//! Guide §1.1 states S/M/L uses *sequential* logical track ordering
-//! (`sector + track×16 + side×(tracks×16)`) while D/E/F uses *interleaved*
-//! ordering (`sector + (track×2+side)×sectors_per_track`), and frames this
-//! purely as "how a driver seeks the physical drive". It does not state -
-//! and this was missed entirely on first implementation, only caught by
-//! testing against a real `adfs640L.adl` image - that **the `.ADL`/`.ADF`
-//! image file's own byte layout is always the interleaved one**, even for
-//! S/M/L. A logical disc address (as encoded as a "sector number" in an
-//! old-map SIN field, which the rest of the spec treats as a plain byte
-//! offset) therefore needs converting from sequential to interleaved
-//! sector order before it's a valid offset into the image file - except
-//! for anything within track 0, where the two orderings coincide, which is
-//! why this was easy to miss: the root directory (fixed at `0x200`) and
-//! any file placed early on disk read correctly either way.
-//!
-//! Because interleaving reorders whole tracks, a logically-contiguous file
-//! that spans a track boundary is *not* contiguous in the image file, so
-//! translation can yield multiple extents from one logical run.
+//! The guide (§1.1) describes S/M/L as using sequential logical track
+//! ordering, but an image file's byte layout is always the interleaved one,
+//! so an old-map SIN "sector number" must be converted from sequential to
+//! interleaved order before it is a valid offset into the image. Track 0 is
+//! unaffected - which is why the fixed `0x200` root reads correctly either
+//! way - and a run spanning a track boundary splits into multiple extents,
+//! since interleaving reorders whole tracks.
 
 use crate::model::object::Extent;
 
