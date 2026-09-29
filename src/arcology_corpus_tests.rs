@@ -63,13 +63,18 @@ struct Artefact {
     file_size: u64,
 }
 
-fn api_get_json<T: serde::de::DeserializeOwned>(base: &str, key: &str, path: &str) -> Result<T, String> {
+fn api_get_json<T: serde::de::DeserializeOwned>(
+    base: &str,
+    key: &str,
+    path: &str,
+) -> Result<T, String> {
     let url = format!("{base}{path}");
     let resp = ureq::get(&url)
         .set("X-API-Key", key)
         .call()
         .map_err(|e| format!("GET {url}: {e}"))?;
-    resp.into_json::<T>().map_err(|e| format!("JSON decode {url}: {e}"))
+    resp.into_json::<T>()
+        .map_err(|e| format!("JSON decode {url}: {e}"))
 }
 
 fn api_get_bytes(base: &str, key: &str, path: &str) -> Result<Vec<u8>, String> {
@@ -116,7 +121,8 @@ fn zstd_decode(data: &[u8], label: &str) -> Result<Vec<u8>, String> {
     let mut dec = ruzstd::StreamingDecoder::new(Cursor::new(data))
         .map_err(|e| format!("zstd init {label}: {e}"))?;
     let mut out = Vec::new();
-    dec.read_to_end(&mut out).map_err(|e| format!("zstd decode {label}: {e}"))?;
+    dec.read_to_end(&mut out)
+        .map_err(|e| format!("zstd decode {label}: {e}"))?;
     Ok(out)
 }
 
@@ -149,13 +155,15 @@ fn stress_against_arcology_corpus() {
     let mut summaries = Vec::new();
 
     'outer: for page in 1.. {
-        let items: ItemsPage =
-            api_get_json(&base, &key, &format!("/items?page={page}&per_page={PAGE_SIZE}"))
-                .unwrap_or_else(|e| panic!("list items page {page}: {e}"));
+        let items: ItemsPage = api_get_json(
+            &base,
+            &key,
+            &format!("/items?page={page}&per_page={PAGE_SIZE}"),
+        )
+        .unwrap_or_else(|e| panic!("list items page {page}: {e}"));
         for item in items.items {
-            let detail: ItemDetail =
-                api_get_json(&base, &key, &format!("/items/{}", item.uuid))
-                    .unwrap_or_else(|e| panic!("get item {}: {e}", item.uuid));
+            let detail: ItemDetail = api_get_json(&base, &key, &format!("/items/{}", item.uuid))
+                .unwrap_or_else(|e| panic!("get item {}: {e}", item.uuid));
             for art in detail.artefacts {
                 let Some(needs_decompress) = classify_image(&art.original_filename, &exts) else {
                     continue;
@@ -188,7 +196,9 @@ fn stress_against_arcology_corpus() {
                     });
                     let mut diag = Diagnostics::default();
                     let _ = verify_filecore_volume(&fs, &mut diag);
-                    let unreadable = verify(&mut fs, &mut diag).map(|v| v.unreadable).unwrap_or(usize::MAX);
+                    let unreadable = verify(&mut fs, &mut diag)
+                        .map(|v| v.unreadable)
+                        .unwrap_or(usize::MAX);
                     let _ = write!(summary, "unreadable={unreadable}");
                     if diag.is_empty() && unreadable == 0 {
                         clean += 1;
@@ -217,5 +227,8 @@ fn stress_against_arcology_corpus() {
     for s in &summaries {
         eprint!("{s}");
     }
-    assert!(candidates > 0, "arcology stress ran but found no disc-image artefacts");
+    assert!(
+        candidates > 0,
+        "arcology stress ran but found no disc-image artefacts"
+    );
 }

@@ -51,14 +51,25 @@ fn assert_clean_verify(fs: &mut FileCoreFs<Cursor<Vec<u8>>>) {
     let mut diag = Diagnostics::default();
     verify_filecore_volume(fs, &mut diag).unwrap();
     let report = verify(fs, &mut diag).unwrap();
-    assert_eq!((report.directories, report.files, report.unreadable), (1, 2, 0), "unexpected: {diag:?}");
-    assert!(diag.is_empty(), "expected a clean image, diagnostics: {diag:?}");
+    assert_eq!(
+        (report.directories, report.files, report.unreadable),
+        (1, 2, 0),
+        "unexpected: {diag:?}"
+    );
+    assert!(
+        diag.is_empty(),
+        "expected a clean image, diagnostics: {diag:?}"
+    );
 }
 
 fn assert_content(dir: &Path, name: &str, expected_len: usize, expected_crc: u32) {
     let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
     assert_eq!(bytes.len(), expected_len, "unexpected length for {name}");
-    assert_eq!(crc32fast::hash(&bytes), expected_crc, "content mismatch for {name}");
+    assert_eq!(
+        crc32fast::hash(&bytes),
+        expected_crc,
+        "content mismatch for {name}"
+    );
 }
 
 fn extract(dir: &Path, bytes: &[u8]) {
@@ -77,7 +88,12 @@ fn all_four_formats_extract_identical_files() {
     // the sequential-to-interleaved conversion.
     let mut qtm: Option<Vec<u8>> = None;
     let mut hostfs: Option<Vec<u8>> = None;
-    for fixture in ["adfs640L.adl.gz", "adfs800D.adf.gz", "adfs800E.adf.gz", "adfs1600F.adf.gz"] {
+    for fixture in [
+        "adfs640L.adl.gz",
+        "adfs800D.adf.gz",
+        "adfs800E.adf.gz",
+        "adfs1600F.adf.gz",
+    ] {
         let dir = tempdir().unwrap();
         extract(dir.path(), &load_fixture(fixture));
         assert_content(dir.path(), "qtm149.txt,fff", QTM149_LEN, QTM149_CRC);
@@ -87,12 +103,16 @@ fn all_four_formats_extract_identical_files() {
             hostfs = Some(std::fs::read(dir.path().join("hostfs.txt,fff")).unwrap());
         } else {
             assert_eq!(
-                std::fs::read(dir.path().join("qtm149.txt,fff")).unwrap().as_slice(),
+                std::fs::read(dir.path().join("qtm149.txt,fff"))
+                    .unwrap()
+                    .as_slice(),
                 qtm.as_deref().unwrap(),
                 "qtm149 differs between formats ({fixture})"
             );
             assert_eq!(
-                std::fs::read(dir.path().join("hostfs.txt,fff")).unwrap().as_slice(),
+                std::fs::read(dir.path().join("hostfs.txt,fff"))
+                    .unwrap()
+                    .as_slice(),
                 hostfs.as_deref().unwrap(),
                 "hostfs differs between formats ({fixture})"
             );
@@ -122,23 +142,74 @@ fn metadata_matches_known_values() {
         zone_total: Option<usize>,
     }
     let cases = [
-        Expect { fixture: "adfs640L.adl.gz", map: "old", dir: "old", name: "00_05_Sun", size: 655360, boot_present: false, zone_total: None },
-        Expect { fixture: "adfs800D.adf.gz", map: "old", dir: "new", name: "00_06_Sun", size: 819200, boot_present: false, zone_total: None },
-        Expect { fixture: "adfs800E.adf.gz", map: "new", dir: "new", name: "00_07_Sun ", size: 819200, boot_present: false, zone_total: Some(1) },
-        Expect { fixture: "adfs1600F.adf.gz", map: "new", dir: "new", name: "00_07_Sun ", size: 1638400, boot_present: true, zone_total: Some(4) },
+        Expect {
+            fixture: "adfs640L.adl.gz",
+            map: "old",
+            dir: "old",
+            name: "00_05_Sun",
+            size: 655360,
+            boot_present: false,
+            zone_total: None,
+        },
+        Expect {
+            fixture: "adfs800D.adf.gz",
+            map: "old",
+            dir: "new",
+            name: "00_06_Sun",
+            size: 819200,
+            boot_present: false,
+            zone_total: None,
+        },
+        Expect {
+            fixture: "adfs800E.adf.gz",
+            map: "new",
+            dir: "new",
+            name: "00_07_Sun ",
+            size: 819200,
+            boot_present: false,
+            zone_total: Some(1),
+        },
+        Expect {
+            fixture: "adfs1600F.adf.gz",
+            map: "new",
+            dir: "new",
+            name: "00_07_Sun ",
+            size: 1638400,
+            boot_present: true,
+            zone_total: Some(4),
+        },
     ];
     for case in cases {
-        let mut fs = FileCoreFs::open(Cursor::new(load_fixture(case.fixture))).expect("recognised as FileCore");
+        let mut fs = FileCoreFs::open(Cursor::new(load_fixture(case.fixture)))
+            .expect("recognised as FileCore");
         let report = build_report(&mut fs).unwrap();
         assert_eq!(report.filesystem, "FileCore", "{}", case.fixture);
         assert_eq!(report.map_type, case.map, "{}", case.fixture);
         assert_eq!(report.dir_type, case.dir, "{}", case.fixture);
-        assert_eq!(report.disc_name.as_deref(), Some(case.name), "{}", case.fixture);
+        assert_eq!(
+            report.disc_name.as_deref(),
+            Some(case.name),
+            "{}",
+            case.fixture
+        );
         assert_eq!(report.disc_size, Some(case.size), "{}", case.fixture);
-        assert_eq!(report.boot_block_present, case.boot_present, "{}", case.fixture);
-        assert_eq!(report.zone_checksum_total, case.zone_total, "{}", case.fixture);
+        assert_eq!(
+            report.boot_block_present, case.boot_present,
+            "{}",
+            case.fixture
+        );
+        assert_eq!(
+            report.zone_checksum_total, case.zone_total,
+            "{}",
+            case.fixture
+        );
         if let Some(total) = case.zone_total {
-            assert_eq!(report.zone_checksum_ok_count, Some(total), "{}", case.fixture);
+            assert_eq!(
+                report.zone_checksum_ok_count,
+                Some(total),
+                "{}",
+                case.fixture
+            );
             assert_eq!(report.cross_check_ok, Some(true), "{}", case.fixture);
         }
         assert!(report.root_check_byte_ok, "{}", case.fixture);
