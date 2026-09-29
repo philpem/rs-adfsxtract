@@ -7,10 +7,20 @@
 //! copyrighted, so they are not committed - only this key-gated test pulls
 //! them at runtime.
 //!
+//! The corpus stores disc images as zstd-compressed raw-sector files and
+//! attaches artefacts to the item record, so this fetches the item detail
+//! (which embeds artefacts), filters to FileCore disc-image names (an .adf /
+//! .adl / .dd / .img / .hdf, possibly with a trailing .zst), decompresses
+//! .zst, and runs open/verify on each.
+//!
 //! Env vars:
-//! - `ACORNFS_ARCOLOGY_KEY`  - required; API key (sent via `X-API-Key`).
-//! - `ACORNFS_ARCOLOGY_API`  - base URL, default `https://arco-staging.philpem.me.uk/api`.
-//! - `ACORNFS_ARCOLOGY_MAX`  - cap on artefacts processed (default 200).
+//! - `ACORNFS_ARCOLOGY_KEY`    - required; API key (sent via `X-API-Key`).
+//! - `ACORNFS_ARCOLOGY_API`    - base URL, default `https://arco-staging.philpem.me.uk/api`.
+//! - `ACORNFS_ARCOLOGY_MAX`    - cap on artefacts processed (default 15, a sample).
+//! - `ACORNFS_ARCOLOGY_EXT`    - comma-separated extensions to sample
+//!   (default `adf,adl,dd,img,hdf` - the FileCore images this tool targets).
+//! - `ACORNFS_ARCOLOGY_MAXSIZE` - skip artefacts larger than this many bytes
+//!   (default 2147483648 = 2 GiB) to avoid OOM on very large dumps.
 
 use std::fmt::Write as _;
 use std::io::{Cursor, Read};
@@ -23,19 +33,24 @@ use crate::format::filecore::FileCoreFs;
 use crate::verify::{verify, verify_filecore_volume};
 
 const DEFAULT_BASE: &str = "https://arco-staging.philpem.me.uk/api";
-const DEFAULT_MAX: u64 = 200;
+const DEFAULT_MAX: u64 = 15;
+const DEFAULT_MAXSIZE: u64 = 2 * 1024 * 1024 * 1024;
 const PAGE_SIZE: u64 = 100;
-
-const DISC_EXTENSIONS: &[&str] = &["adf", "adl", "adf", "dd", "img", "hdf", "flp", "ssd", "dsd"];
+const DEFAULT_EXT: &[&str] = &["adf", "adl", "dd", "img", "hdf"];
 
 #[derive(Deserialize)]
 struct ItemsPage {
-    items: Vec<Item>,
+    items: Vec<ItemRef>,
 }
 
 #[derive(Deserialize)]
-struct Item {
+struct ItemRef {
     uuid: String,
+}
+
+#[derive(Deserialize)]
+struct ItemDetail {
+    artefacts: Vec<Artefact>,
 }
 
 #[derive(Deserialize)]
@@ -45,7 +60,7 @@ struct Artefact {
     #[serde(default)]
     is_restricted: bool,
     #[serde(default)]
-    artefact_type: String,
+    file_size: u64,
 }
 
 fn api_get_json<T: serde::de::DeserializeOwned>(base: &str, key: &str, path: &str) -> Result<T, String> {
@@ -70,9 +85,39 @@ fn api_get_bytes(base: &str, key: &str, path: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn is_disc_image(filename: &str) -> bool {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    DISC_EXTENSIONS.contains(&ext.as_str())
+fn sample_extensions() -> Vec<String> {
+    match std::env::var("ACORNFS_ARCOLOGY_EXT") {
+        Ok(v) => v
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Err(_) => DEFAULT_EXT.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// A FileCore disc image is one of the supported extensions, optionally
+/// zstd-compressed (`.zst`). Returns (is_image, needs_decompress).
+fn classify_image(filename: &str, exts: &[String]) -> Option<bool> {
+    let mut name = filename.to_ascii_lowercase();
+    let compressed = name.ends_with(".zst");
+    if compressed {
+        name = name[..name.len() - 4].to_string();
+    }
+    let ext = name.rsplit('.').next().unwrap_or("");
+    if exts.iter().any(|e| e == ext) {
+        Some(compressed)
+    } else {
+        None
+    }
+}
+
+fn zstd_decode(data: &[u8], label: &str) -> Result<Vec<u8>, String> {
+    let mut dec = ruzstd::StreamingDecoder::new(Cursor::new(data))
+        .map_err(|e| format!("zstd init {label}: {e}"))?;
+    let mut out = Vec::new();
+    dec.read_to_end(&mut out).map_err(|e| format!("zstd decode {label}: {e}"))?;
+    Ok(out)
 }
 
 #[test]
@@ -90,11 +135,17 @@ fn stress_against_arcology_corpus() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX);
+    let max_size = std::env::var("ACORNFS_ARCOLOGY_MAXSIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAXSIZE);
+    let exts = sample_extensions();
 
     let mut candidates = 0usize;
     let mut not_filecore = 0usize;
     let mut clean = 0usize;
     let mut faults = 0usize;
+    let mut too_big = 0usize;
     let mut summaries = Vec::new();
 
     'outer: for page in 1.. {
@@ -102,20 +153,32 @@ fn stress_against_arcology_corpus() {
             api_get_json(&base, &key, &format!("/items?page={page}&per_page={PAGE_SIZE}"))
                 .unwrap_or_else(|e| panic!("list items page {page}: {e}"));
         for item in items.items {
-            let artefacts: Vec<Artefact> =
-                api_get_json(&base, &key, &format!("/items/{}/artefacts", item.uuid))
-                    .unwrap_or_else(|e| panic!("list artefacts for {}: {e}", item.uuid));
-            for art in artefacts {
-                if art.is_restricted || !is_disc_image(&art.original_filename) {
+            let detail: ItemDetail =
+                api_get_json(&base, &key, &format!("/items/{}", item.uuid))
+                    .unwrap_or_else(|e| panic!("get item {}: {e}", item.uuid));
+            for art in detail.artefacts {
+                let Some(needs_decompress) = classify_image(&art.original_filename, &exts) else {
+                    continue;
+                };
+                if art.is_restricted {
                     continue;
                 }
-                let label = format!("{}/{}", art.original_filename, art.artefact_type);
-                let data = api_get_bytes(&base, &key, &format!("/artefacts/{}/download", art.uuid))
+                if art.file_size > max_size {
+                    too_big += 1;
+                    continue;
+                }
+                let label = art.original_filename.clone();
+                let raw = api_get_bytes(&base, &key, &format!("/artefacts/{}/download", art.uuid))
                     .unwrap_or_else(|e| panic!("download {label}: {e}"));
+                let data = if needs_decompress {
+                    zstd_decode(&raw, &label).unwrap_or_else(|e| panic!("{e}"))
+                } else {
+                    raw
+                };
                 candidates += 1;
 
                 let mut summary = format!("{label}: ");
-                let status = if let Ok(mut fs) = FileCoreFs::open(Cursor::new(data.to_vec())) {
+                let status = if let Ok(mut fs) = FileCoreFs::open(Cursor::new(data)) {
                     let _ = build_report(&mut fs).map(|r| {
                         let _ = write!(
                             summary,
@@ -149,7 +212,7 @@ fn stress_against_arcology_corpus() {
     }
 
     eprintln!(
-        "arcology stress: candidates={candidates} clean={clean} has_faults={faults} non_filecore={not_filecore}"
+        "arcology stress: candidates={candidates} clean={clean} has_faults={faults} non_filecore={not_filecore} too_big={too_big}"
     );
     for s in &summaries {
         eprint!("{s}");

@@ -24,3 +24,4 @@ winnow = "1.0.4"
 tempfile = "3.27.0"
 flate2 = "1.0"
 ureq = { version = "2", features = ["json"] }
+ruzstd = "0.7"
