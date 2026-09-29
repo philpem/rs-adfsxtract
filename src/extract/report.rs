@@ -28,6 +28,15 @@ pub struct DiscReport {
     pub zone_checksum_total: Option<usize>,
     pub cross_check_ok: Option<bool>,
     pub root_check_byte_ok: bool,
+    /// RISC OS path (e.g. `$.!Calendar`) of every directory whose listing
+    /// is structurally broken, found by walking the whole tree - ADFS/FSCK
+    /// report these as "broken directory" while the volume-level checks
+    /// above can pass.
+    pub broken_directories: Vec<String>,
+    /// Non-fatal directory quirks (`<path>: <warning>`), e.g. entries out of
+    /// collation order or a wrong tail NewDirParent. ADFS/FSCK flag these
+    /// too, but they don't stop a best-effort read.
+    pub directory_warnings: Vec<String>,
 }
 
 pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscReport> {
@@ -74,7 +83,8 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
     };
 
     let root = fs.root()?;
-    let root_list = fs.list(&root)?;
+    let root_list = fs.list_with_parent(&root, root.sin)?;
+    let (broken_directories, directory_warnings) = collect_directory_health(fs);
 
     Ok(DiscReport {
         filesystem: "FileCore",
@@ -99,7 +109,58 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
         zone_checksum_total,
         cross_check_ok,
         root_check_byte_ok: !root_list.is_broken,
+        broken_directories,
+        directory_warnings,
     })
+}
+
+/// Walks the whole tree listing each directory, collecting (a) the RISC OS
+/// path of any structurally-broken directory and (b) any non-fatal quirk as
+/// `<path>: <warning>`. This is what lets `info` surface a problem in a
+/// non-root directory (e.g. `$.!Calendar`) that has nothing to do with the
+/// volume-level checks, matching what ADFS/FSCK report on mount. An explicit
+/// stack plus an extent fingerprint set guards against a directory cycle on
+/// a corrupt disc.
+fn collect_directory_health<S: SectorSource>(fs: &mut FileCoreFs<S>) -> (Vec<String>, Vec<String>) {
+    use crate::format::fs::FileSystem;
+    use std::collections::HashSet;
+
+    let mut broken = Vec::new();
+    let mut warnings = Vec::new();
+    let Ok(root) = fs.root() else {
+        return (broken, warnings);
+    };
+    let root_sin = root.sin;
+    let mut stack = vec![(root, "$".to_string(), root_sin)];
+    let mut visited: HashSet<Vec<(u64, u64)>> = HashSet::new();
+
+    while let Some((dir_obj, path, parent_sin)) = stack.pop() {
+        let fingerprint: Vec<(u64, u64)> = dir_obj
+            .extents
+            .iter()
+            .map(|e| (e.disc_addr, e.len))
+            .collect();
+        if !fingerprint.is_empty() && !visited.insert(fingerprint) {
+            continue;
+        }
+        let Ok(listing) = fs.list_with_parent(&dir_obj, parent_sin) else {
+            broken.push(path.clone());
+            continue;
+        };
+        if listing.is_broken {
+            broken.push(path.clone());
+        }
+        for w in &listing.warnings {
+            warnings.push(format!("{path}: {w}"));
+        }
+        for obj in listing.objects {
+            let child_path = format!("{path}.{}", obj.name);
+            if obj.is_directory {
+                stack.push((obj, child_path, dir_obj.sin));
+            }
+        }
+    }
+    (broken, warnings)
 }
 
 /// DFS has no map/directory-type distinction and no checksum of any kind,
@@ -113,7 +174,7 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
     let total_sectors: u64 = fs.catalogues.iter().map(|c| c.total_sectors as u64).sum();
 
     let root = fs.root()?;
-    let root_list = fs.list(&root)?;
+    let root_list = fs.list_with_parent(&root, root.sin)?;
 
     Ok(DiscReport {
         filesystem: "DFS",
@@ -135,6 +196,8 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
         zone_checksum_total: None,
         cross_check_ok: None,
         root_check_byte_ok: !root_list.is_broken,
+        broken_directories: Vec::new(),
+        directory_warnings: Vec::new(),
     })
 }
 
@@ -179,6 +242,22 @@ impl DiscReport {
             lines.push(format!("Cross-check ok:  {ok}"));
         }
         lines.push(format!("Root dir ok:     {}", self.root_check_byte_ok));
+        lines.push(format!(
+            "Broken dirs:     {}",
+            if self.broken_directories.is_empty() {
+                "none".to_string()
+            } else {
+                self.broken_directories.join(", ")
+            }
+        ));
+        lines.push(format!(
+            "Dir warnings:    {}",
+            if self.directory_warnings.is_empty() {
+                "none".to_string()
+            } else {
+                self.directory_warnings.join("; ")
+            }
+        ));
         lines.join("\n")
     }
 }

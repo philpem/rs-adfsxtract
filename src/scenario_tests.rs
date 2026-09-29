@@ -165,14 +165,33 @@ fn nested_directories_are_well_formed_not_reported_broken() {
 }
 
 #[test]
-fn verify_reports_a_bad_parent_sin_as_warning() {
-    // A bad tail NewDirParent is surfaced by `verify` as a warning, not a
-    // structural break: the tree is still readable.
+fn info_and_verify_surface_a_bad_parent_sin() {
+    // The issue: `info`/`verify` reported a disc with a bad tail NewDirParent
+    // as healthy. Corrupt the root directory's parent SIN to a wrong value
+    // and assert both surfaces now flag it - as a warning, since the tree is
+    // still readable.
     use crate::diagnostics::Diagnostics;
+    use crate::extract::report::build_report;
     use crate::verify::verify;
 
     let cfg = NewMapConfig::default();
     let image = bad_root_parent_disc(&cfg);
+
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let report = build_report(&mut fs).unwrap();
+    assert!(
+        report
+            .directory_warnings
+            .iter()
+            .any(|w| w.contains("parent SIN mismatch")),
+        "info should surface the parent-SIN warning: {:?}",
+        report.directory_warnings
+    );
+    assert!(
+        report.broken_directories.is_empty(),
+        "a wrong parent SIN is a warning, not a structural break: {:?}",
+        report.broken_directories
+    );
 
     let mut fs = FileCoreFs::open(image.cursor()).unwrap();
     let mut diag = Diagnostics::default();
