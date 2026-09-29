@@ -37,7 +37,14 @@ pub struct DirDecodeResult {
     pub parent_raw: u32,
     pub is_broken: bool,
     pub check_byte_ok: bool,
+    /// Fatal structural corruption (bad sequence/validation/checksum): the
+    /// directory structure can't be trusted and `is_broken` is set.
     pub anomalies: Vec<String>,
+    /// Non-fatal observations that ADFS/FSCK would flag but that don't stop
+    /// us reading the tree (entries out of collation order, a wrong tail
+    /// NewDirParent, a zero-length file carrying a real fragment). These are
+    /// reported but never cause `is_broken`.
+    pub warnings: Vec<String>,
 }
 
 fn decode_name(raw: &[u8; 10], mask_top_bit: bool) -> (String, u32) {
@@ -72,6 +79,30 @@ fn decode_name(raw: &[u8; 10], mask_top_bit: bool) -> (String, u32) {
 
 fn read_u24_le(b: &[u8]) -> u32 {
     b[0] as u32 | (b[1] as u32) << 8 | (b[2] as u32) << 16
+}
+
+/// ADFS collation order for directory entries (guide §3.3): case-insensitive
+/// on the raw RISC OS name bytes, compared byte-by-byte. Comparing the raw
+/// bytes - not decoded Unicode code points - matters for the RISC OS
+/// `0x80-0x9F` range, whose decode table maps to arbitrary high Unicode
+/// points (e.g. 0x80 -> U+20AC) that would reorder them against `0xA0-0xFF`
+/// relative to ADFS's on-disk byte order. High-bit/Latin-1 characters sort
+/// above ASCII by byte value (not masked to 7-bit, which would fold 0xA4 to
+/// '$' and sort it below the letters). ASCII letters fold to lower case.
+pub(crate) fn name_collation_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    collation_key(a).cmp(&collation_key(b))
+}
+
+fn collation_key(name: &[u8]) -> Vec<u8> {
+    name.iter().map(|&b| b.to_ascii_lowercase()).collect()
+}
+
+/// True if the given raw name byte strings are in non-decreasing ADFS
+/// collation order.
+pub(crate) fn names_in_collation_order(names: &[Vec<u8>]) -> bool {
+    names
+        .windows(2)
+        .all(|w| name_collation_cmp(&w[0], &w[1]) != std::cmp::Ordering::Greater)
 }
 
 pub(crate) struct TailLayout {
@@ -179,8 +210,10 @@ pub fn decode_dir(
     new_map: Option<&NewMapIndex>,
     sharing_unit: u64,
     sml_geometry: Option<&SmlGeometry>,
+    expected_parent_sin: Option<u32>,
 ) -> Result<DirDecodeResult> {
     let mut anomalies = Vec::new();
+    let mut warnings = Vec::new();
     let expected_len = if small {
         SMALL_DIR_SIZE
     } else {
@@ -228,6 +261,7 @@ pub fn decode_dir(
     }
 
     let mut objects = Vec::with_capacity(used_entries);
+    let mut collation_names: Vec<Vec<u8>> = Vec::with_capacity(used_entries);
     for i in 0..used_entries {
         let off = HEADER_SIZE + i * ENTRY_SIZE;
         let entry = &data[off..off + ENTRY_SIZE];
@@ -301,6 +335,21 @@ pub fn decode_dir(
             )
         };
 
+        // A zero-length file must carry a fragment-ID-0 SIN (i.e. "no disc
+        // space", guide §3.2/§3.3); a real file of length 0 uses fragment 0
+        // and allocates nothing. RISC OS's FSCK warns on any zero-length
+        // file that was instead recorded with a real fragment. Non-fatal:
+        // the file simply has no data, so we still extract it as empty.
+        if map_type == MapType::New && !is_directory && length == 0 {
+            let fragment_id = (sin_raw >> 8) & 0xFFFF;
+            if fragment_id != 0 {
+                warnings.push(format!(
+                    "{name}: zero-length file recorded with fragment id {fragment_id} \
+                     (must be 0, no disc space)"
+                ));
+            }
+        }
+
         objects.push(Object {
             name,
             load,
@@ -309,7 +358,27 @@ pub fn decode_dir(
             attrs,
             is_directory,
             extents,
+            sin: (map_type == MapType::New).then_some(sin_raw),
         });
+
+        // Raw name bytes for collation (the logical name, so S/M/L top bits
+        // masked off), terminated at NUL/CR like `decode_name`.
+        collation_names.push(
+            name_raw
+                .iter()
+                .map(|&b| if small { b & 0x7F } else { b })
+                .take_while(|&b| b != 0 && b != 0x0D)
+                .collect(),
+        );
+    }
+
+    // Entries must be in ADFS case-insensitive collation order (ADFS
+    // binary-searches them). ADFS/FSCK report an unsorted directory as
+    // "broken", but the entries themselves are all readable, so this is
+    // surfaced as a warning rather than a fatal error - a "best effort"
+    // extraction can still walk the tree.
+    if !names_in_collation_order(&collation_names) {
+        warnings.push("directory entries are not in case-insensitive collation order".into());
     }
 
     if data.get(tail.end_marker).copied() != Some(0) {
@@ -365,8 +434,24 @@ pub fn decode_dir(
 
     let parent_raw = read_u24_le(&data[tail.parent..tail.parent + 3]);
 
-    // Not a broken directory by the terminator-missing anomaly alone if the
-    // validation/seq/checksum all check out - but do surface it.
+    // New-map (E/F) directories: the tail `NewDirParent` must hold the
+    // containing directory's SIN (the root points back to its own SIN), not
+    // a byte address. A mismatch is flagged, but the tree is still walkable:
+    // each entry's own SIN (which we do trust) is used to resolve children,
+    // so this is a warning rather than a fatal error. Old-map directories
+    // are not validated (their parent field has different semantics).
+    match (map_type, expected_parent_sin) {
+        (MapType::New, Some(expected)) if parent_raw != expected => {
+            warnings.push(format!(
+                "directory parent SIN mismatch: stored {parent_raw:#06x}, expected {expected:#06x}"
+            ));
+        }
+        _ => {}
+    }
+
+    // Fatal: only a structural integrity failure (bad sequence, validation
+    // or checksum) means the directory contents can't be trusted. The
+    // warnings above never set this.
     let is_broken = !seq_match || !validation_match || !check_byte_ok;
 
     Ok(DirDecodeResult {
@@ -376,6 +461,7 @@ pub fn decode_dir(
         is_broken,
         check_byte_ok,
         anomalies,
+        warnings,
     })
 }
 
@@ -403,7 +489,7 @@ mod tests {
         // came up short) must not panic - every offset in the real parse
         // path assumes a full-size buffer.
         let short = vec![0u8; 10];
-        let result = decode_dir(&short, true, MapType::Old, None, 0, None).unwrap();
+        let result = decode_dir(&short, true, MapType::Old, None, 0, None, None).unwrap();
         assert!(result.is_broken);
         assert!(result.objects.is_empty());
         assert!(!result.anomalies.is_empty());
@@ -411,7 +497,133 @@ mod tests {
 
     #[test]
     fn empty_buffer_is_reported_broken_not_panicked() {
-        let result = decode_dir(&[], false, MapType::New, None, 0, None).unwrap();
+        let result = decode_dir(&[], false, MapType::New, None, 0, None, None).unwrap();
         assert!(result.is_broken);
+    }
+
+    /// Builds a structurally-valid new-map (large) directory buffer with the
+    /// given `(name, length, sin)` entries and a tail NewDirParent of
+    /// `parent`. The header sequence/validation and checksum are computed
+    /// correctly, so `decode_dir`'s `is_broken` is driven solely by the
+    /// entry-order / parent / zero-length checks under test rather than by a
+    /// mismatched checksum. Fragment resolution intentionally gets no map
+    /// index, which yields a harmless anomaly but not a broken flag.
+    fn build_new_dir(entries: &[(&str, u32, u32)], parent: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; LARGE_DIR_SIZE];
+        buf[0] = 1;
+        buf[1..5].copy_from_slice(b"Hugo");
+        for (i, (name, length, sin)) in entries.iter().enumerate() {
+            let off = HEADER_SIZE + i * ENTRY_SIZE;
+            let mut nm = [0u8; 10];
+            for (j, b) in name.bytes().take(10).enumerate() {
+                nm[j] = b;
+            }
+            buf[off..off + 10].copy_from_slice(&nm);
+            buf[off + 0x12..off + 0x16].copy_from_slice(&length.to_le_bytes());
+            buf[off + 0x16] = (sin & 0xFF) as u8;
+            buf[off + 0x17] = ((sin >> 8) & 0xFF) as u8;
+            buf[off + 0x18] = ((sin >> 16) & 0xFF) as u8;
+            buf[off + 0x19] = 0x03;
+        }
+        let tail = tail_layout(false);
+        buf[tail.parent] = (parent & 0xFF) as u8;
+        buf[tail.parent + 1] = ((parent >> 8) & 0xFF) as u8;
+        buf[tail.parent + 2] = ((parent >> 16) & 0xFF) as u8;
+        buf[tail.end_seq] = 1;
+        buf[tail.end_validation.0..tail.end_validation.0 + 4].copy_from_slice(b"Hugo");
+        let end_of_entries = HEADER_SIZE + entries.len() * ENTRY_SIZE;
+        let regions = [
+            ChecksumRegion {
+                start: 0,
+                end: end_of_entries,
+                words_first: true,
+            },
+            ChecksumRegion {
+                start: tail.tail_start + 1,
+                end: tail.dir_len - 4,
+                words_first: false,
+            },
+        ];
+        let checksum = dir_checksum_fold(dir_checksum_accumulate(&buf, &regions));
+        buf[tail.check_byte] = checksum;
+        buf
+    }
+
+    fn decode_new(buf: &[u8], expected_parent: Option<u32>) -> DirDecodeResult {
+        decode_dir(buf, false, MapType::New, None, 0, None, expected_parent).unwrap()
+    }
+
+    #[test]
+    fn sorted_entries_are_not_reported_broken() {
+        let buf = build_new_dir(&[("Alpha", 5, 0x300), ("beta", 6, 0x400)], 0x203);
+        let r = decode_new(&buf, Some(0x203));
+        assert!(!r.is_broken, "anomalies: {:?}", r.anomalies);
+        assert!(r.warnings.is_empty(), "warnings: {:?}", r.warnings);
+    }
+
+    #[test]
+    fn unsorted_entries_are_warned_but_not_fatal() {
+        // Case-insensitively, "beta" sorts after "alpha"; writing them in
+        // extraction order (beta first) is what RISC OS reports as broken.
+        // The entries are all readable, so it is a warning, not a fatal
+        // broken-directory - a best-effort extraction can still walk it.
+        let buf = build_new_dir(&[("beta", 6, 0x400), ("Alpha", 5, 0x300)], 0x203);
+        let r = decode_new(&buf, Some(0x203));
+        assert!(!r.is_broken, "anomalies: {:?}", r.anomalies);
+        assert!(
+            r.warnings.iter().any(|a| a.contains("collation")),
+            "warnings: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn collation_is_case_insensitive_and_code_point_aware() {
+        // Case-insensitive: "Grape" sorts after "fIge" (fig < gra), not
+        // after by raw byte value where uppercase 'G' (0x47) < 'f' (0x66).
+        assert_eq!(
+            name_collation_cmp(b"Grape", b"fIge"),
+            std::cmp::Ordering::Greater
+        );
+        // High-bit / Latin-1 characters (e.g. 0xA4) sort above ASCII
+        // alphanumerics by byte value, not below - masking to 7-bit would
+        // fold 0xA4 to '$' and sort it before the letters.
+        assert_eq!(name_collation_cmp(b"A", &[0xA4]), std::cmp::Ordering::Less);
+        // RISC OS-specific high bytes are compared by their raw on-disk
+        // value, not by their remapped Unicode code point: byte 0x80 sorts
+        // below Latin-1 0xE9, matching ADFS, even though 0x80 decodes to
+        // U+20AC (which is *above* U+00E9 as a code point).
+        assert_eq!(
+            name_collation_cmp(&[0x80], &[0xE9]),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn wrong_parent_sin_is_warned_but_not_fatal() {
+        // The tree is still walkable using each entry's own SIN, so a wrong
+        // tail NewDirParent is flagged without making the directory broken.
+        let buf = build_new_dir(&[("Alpha", 5, 0x300)], 0x999);
+        let r = decode_new(&buf, Some(0x203));
+        assert!(!r.is_broken, "anomalies: {:?}", r.anomalies);
+        assert!(
+            r.warnings.iter().any(|a| a.contains("parent")),
+            "warnings: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn zero_length_file_with_real_fragment_is_warned_but_not_fatal() {
+        // length == 0 but fragment id 3 (nonzero) instead of fragment 0.
+        // Non-fatal: the file has no data, so it still extracts as empty.
+        let buf = build_new_dir(&[("Empty", 0, 0x300)], 0x203);
+        let r = decode_new(&buf, Some(0x203));
+        assert!(!r.is_broken, "anomalies: {:?}", r.anomalies);
+        assert!(
+            r.warnings.iter().any(|a| a.contains("zero-length")),
+            "warnings: {:?}",
+            r.warnings
+        );
     }
 }

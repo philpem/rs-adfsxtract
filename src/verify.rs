@@ -25,10 +25,12 @@ pub struct VerifyReport {
 /// directory cycle on a corrupt disc.
 pub fn verify<FS: FileSystem>(fs: &mut FS, diag: &mut Diagnostics) -> Result<VerifyReport> {
     let mut report = VerifyReport::default();
-    let mut stack = vec![(fs.root()?, "$".to_string())];
+    let root = fs.root()?;
+    let root_sin = root.sin;
+    let mut stack = vec![(root, "$".to_string(), root_sin)];
     let mut visited: HashSet<Vec<(u64, u64)>> = HashSet::new();
 
-    while let Some((dir_obj, riscos_path)) = stack.pop() {
+    while let Some((dir_obj, riscos_path, expected_parent_sin)) = stack.pop() {
         let fingerprint: Vec<(u64, u64)> = dir_obj
             .extents
             .iter()
@@ -41,7 +43,7 @@ pub fn verify<FS: FileSystem>(fs: &mut FS, diag: &mut Diagnostics) -> Result<Ver
         }
         report.directories += 1;
 
-        let listing = match fs.list(&dir_obj) {
+        let listing = match fs.list_with_parent(&dir_obj, expected_parent_sin) {
             Ok(l) => l,
             Err(e) => {
                 diag.push(
@@ -65,10 +67,20 @@ pub fn verify<FS: FileSystem>(fs: &mut FS, diag: &mut Diagnostics) -> Result<Ver
             report.unreadable += 1;
         }
 
+        // Non-fatal quirks are reported as warnings, but the directory is
+        // still walked and its files counted (matching extract's best-effort
+        // behaviour).
+        for w in &listing.warnings {
+            diag.push(
+                Diagnostic::from_fault(Fault::DirectoryWarning { details: w.clone() })
+                    .at_path(&riscos_path),
+            );
+        }
+
         for obj in listing.objects {
             let child_path = format!("{riscos_path}.{}", obj.name);
             if obj.is_directory {
-                stack.push((obj, child_path));
+                stack.push((obj, child_path, dir_obj.sin));
             } else {
                 report.files += 1;
                 verify_file(&mut *fs, &obj, &child_path, &mut *diag, &mut report)?;

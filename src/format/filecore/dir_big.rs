@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::format::filecore::checksums::{
     ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold,
 };
+use crate::format::filecore::dir_old::names_in_collation_order;
 use crate::format::filecore::map_new::NewMapIndex;
 use crate::model::object::{ATTR_DIRECTORY, Extent, Object, truncate_extents};
 
@@ -22,6 +23,9 @@ pub struct BigDirDecodeResult {
     pub is_broken: bool,
     pub check_byte_ok: bool,
     pub anomalies: Vec<String>,
+    /// Non-fatal observations (unsorted entries, wrong parent SIN,
+    /// zero-length file with a real fragment) - reported but never fatal.
+    pub warnings: Vec<String>,
 }
 
 pub(crate) fn pad4(n: usize) -> usize {
@@ -68,8 +72,10 @@ pub fn decode_big_dir(
     data: &[u8],
     new_map: &NewMapIndex,
     sharing_unit: u64,
+    expected_parent_sin: Option<u32>,
 ) -> Result<BigDirDecodeResult> {
     let mut anomalies = Vec::new();
+    let mut warnings = Vec::new();
 
     if data.len() < HEADER_FIXED_SIZE {
         // Every fixed-header field below is read by direct offset; a
@@ -112,6 +118,7 @@ pub fn decode_big_dir(
     let region1_end = heap_start + names_size;
 
     let mut objects = Vec::new();
+    let mut collation_names: Vec<Vec<u8>> = Vec::new();
     if data.len() >= region1_end {
         // Only allocate once `n_entries` is known to be consistent with
         // the buffer we actually have - `region1_end` grows with
@@ -132,16 +139,23 @@ pub fn decode_big_dir(
             let obj_name_len = u32::from_le_bytes(entry[20..24].try_into().unwrap()) as usize;
             let obj_name_ptr = u32::from_le_bytes(entry[24..28].try_into().unwrap()) as usize;
 
-            let name = if heap_start + obj_name_ptr + obj_name_len <= data.len() {
-                crate::xlate::charset::decode(
-                    &data[heap_start + obj_name_ptr..heap_start + obj_name_ptr + obj_name_len],
-                )
+            let (name, coll_bytes) = if heap_start + obj_name_ptr + obj_name_len <= data.len() {
+                let nb = &data[heap_start + obj_name_ptr..heap_start + obj_name_ptr + obj_name_len];
+                (crate::xlate::charset::decode(nb), nb.to_vec())
             } else {
                 anomalies.push(format!("entry {i}: name heap offset out of range"));
-                String::new()
+                (String::new(), Vec::new())
             };
+            collation_names.push(coll_bytes);
 
             let is_directory = attrs & ATTR_DIRECTORY != 0;
+            if !is_directory && length == 0 && (sin_raw >> 8) != 0 {
+                warnings.push(format!(
+                    "{name}: zero-length file recorded with fragment id {:#x} (must be 0, no \
+                     disc space)",
+                    sin_raw >> 8
+                ));
+            }
             let extents = if is_directory {
                 let fragment_id = sin_raw >> 8;
                 let sharing_offset = sin_raw & 0xFF;
@@ -178,6 +192,7 @@ pub fn decode_big_dir(
                 attrs,
                 is_directory,
                 extents,
+                sin: Some(sin_raw),
             });
         }
     } else {
@@ -231,6 +246,23 @@ pub fn decode_big_dir(
         check_byte_ok = false;
     }
 
+    if !names_in_collation_order(&collation_names) {
+        warnings.push("directory entries are not in case-insensitive collation order".into());
+    }
+
+    // The big-directory parent field (at header offset 24) must hold the
+    // containing directory's SIN; the walker supplies the expected value
+    // when recursing. Non-fatal: the tree is still walkable.
+    if let Some(expected) = expected_parent_sin
+        && parent_raw != expected
+    {
+        warnings.push(format!(
+            "directory parent SIN mismatch: stored {parent_raw:#08x}, expected {expected:#08x}"
+        ));
+    }
+
+    // Fatal: only a structural integrity failure (signatures, sequence,
+    // checksum) means the directory contents can't be trusted.
     let is_broken = !start_name_ok || !end_name_ok || !end_seq_ok || !check_byte_ok;
 
     Ok(BigDirDecodeResult {
@@ -240,6 +272,7 @@ pub fn decode_big_dir(
         is_broken,
         check_byte_ok,
         anomalies,
+        warnings,
     })
 }
 
@@ -256,7 +289,7 @@ mod tests {
         let short = vec![0u8; 10];
         let dr = parse_disc_record(&[0u8; 60]).unwrap();
         let new_map = NewMapIndex::empty_for_test(dr);
-        let result = decode_big_dir(&short, &new_map, 0).unwrap();
+        let result = decode_big_dir(&short, &new_map, 0, None).unwrap();
         assert!(result.is_broken);
         assert!(result.objects.is_empty());
         assert!(!result.anomalies.is_empty());
@@ -266,7 +299,7 @@ mod tests {
     fn empty_buffer_is_reported_broken_not_panicked() {
         let dr = parse_disc_record(&[0u8; 60]).unwrap();
         let new_map = NewMapIndex::empty_for_test(dr);
-        let result = decode_big_dir(&[], &new_map, 0).unwrap();
+        let result = decode_big_dir(&[], &new_map, 0, None).unwrap();
         assert!(result.is_broken);
     }
 
@@ -280,7 +313,7 @@ mod tests {
         data[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
         let dr = parse_disc_record(&[0u8; 60]).unwrap();
         let new_map = NewMapIndex::empty_for_test(dr);
-        let result = decode_big_dir(&data, &new_map, 0).unwrap();
+        let result = decode_big_dir(&data, &new_map, 0, None).unwrap();
         assert!(result.objects.is_empty());
         assert!(result.anomalies.iter().any(|a| a.contains("truncated")));
     }

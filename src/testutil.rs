@@ -134,18 +134,36 @@ struct ChildMeta {
     content_len: usize,
 }
 
+fn entry_name(e: &SynthEntry) -> &str {
+    match e {
+        SynthEntry::File(f) => &f.name,
+        SynthEntry::Dir { name, .. } => name,
+    }
+}
+
 /// Recursively allocates a fragment ID for every object (file or
 /// directory) at any depth, flattening them all into `all_objects` (which
 /// `build_new_map_disc` places on disk one-for-one) - a directory's own
 /// serialized bytes reference its children only by fragment ID, so the
 /// children's *data* must be placed separately, not nested inside the
-/// parent's bytes on disk.
+/// parent's bytes on disk. `parent_sin` is the containing directory's SIN,
+/// written into each directory's tail NewDirParent (the root points back to
+/// its own SIN). Entries are emitted in ADFS case-insensitive collation
+/// order, as RISC OS requires and the reader now enforces.
 fn allocate_objects(
     entries: Vec<SynthEntry>,
     next_id: &mut u32,
     big_dirs: bool,
     all_objects: &mut Vec<(u32, Vec<u8>)>,
+    parent_sin: u32,
 ) -> Vec<ChildMeta> {
+    let mut entries = entries;
+    entries.sort_by(|a, b| {
+        crate::format::filecore::dir_old::name_collation_cmp(
+            &encode_charset_str(entry_name(a)),
+            &encode_charset_str(entry_name(b)),
+        )
+    });
     let mut result = Vec::new();
     for e in entries {
         match e {
@@ -168,14 +186,20 @@ fn allocate_objects(
                 attrs,
                 children,
             } => {
-                let child_meta = allocate_objects(children, next_id, big_dirs, all_objects);
-                let data = if big_dirs {
-                    serialize_big_dir(&name, &child_meta)
-                } else {
-                    serialize_new_dir(&name, &child_meta, b"Nick")
-                };
+                // Allocate this directory's own fragment ID before
+                // serializing its children - they must reference this
+                // directory's SIN as their parent, and that ID isn't known
+                // until we assign it here.
                 let id = *next_id;
                 *next_id += 1;
+                let self_sin = id << 8;
+                let child_meta =
+                    allocate_objects(children, next_id, big_dirs, all_objects, self_sin);
+                let data = if big_dirs {
+                    serialize_big_dir(&name, &child_meta, parent_sin)
+                } else {
+                    serialize_new_dir(&name, &child_meta, b"Nick", parent_sin)
+                };
                 let len = data.len();
                 all_objects.push((id, data));
                 result.push(ChildMeta {
@@ -192,7 +216,12 @@ fn allocate_objects(
     result
 }
 
-fn serialize_new_dir(name: &str, children: &[ChildMeta], validation: &[u8; 4]) -> Vec<u8> {
+fn serialize_new_dir(
+    name: &str,
+    children: &[ChildMeta],
+    validation: &[u8; 4],
+    parent_sin: u32,
+) -> Vec<u8> {
     let dir_len = dir_old::LARGE_DIR_SIZE;
     let mut buf = vec![0u8; dir_len];
     buf[0] = 1;
@@ -217,6 +246,11 @@ fn serialize_new_dir(name: &str, children: &[ChildMeta], validation: &[u8; 4]) -
     }
 
     let tail = dir_old::tail_layout(false);
+    // The tail NewDirParent must hold the containing directory's SIN (the
+    // root points back to its own SIN), not a byte address.
+    buf[tail.parent] = (parent_sin & 0xFF) as u8;
+    buf[tail.parent + 1] = ((parent_sin >> 8) & 0xFF) as u8;
+    buf[tail.parent + 2] = ((parent_sin >> 16) & 0xFF) as u8;
     let title_bytes = pad_to(encode_charset_str(name), tail.title.1);
     buf[tail.title.0..tail.title.0 + tail.title.1].copy_from_slice(&title_bytes);
     let name_bytes = pad_to(encode_charset_str(name), tail.name.1);
@@ -244,7 +278,7 @@ fn serialize_new_dir(name: &str, children: &[ChildMeta], validation: &[u8; 4]) -
     buf
 }
 
-fn serialize_big_dir(name: &str, children: &[ChildMeta]) -> Vec<u8> {
+fn serialize_big_dir(name: &str, children: &[ChildMeta], parent_sin: u32) -> Vec<u8> {
     use crate::format::filecore::dir_big::{ENTRY_SIZE, HEADER_FIXED_SIZE};
 
     let dir_name_bytes = encode_charset_str(name);
@@ -283,7 +317,7 @@ fn serialize_big_dir(name: &str, children: &[ChildMeta]) -> Vec<u8> {
     buf[12..16].copy_from_slice(&(big_dir_size as u32).to_le_bytes());
     buf[16..20].copy_from_slice(&(children.len() as u32).to_le_bytes());
     buf[20..24].copy_from_slice(&(names_size as u32).to_le_bytes());
-    buf[24..28].copy_from_slice(&0u32.to_le_bytes());
+    buf[24..28].copy_from_slice(&parent_sin.to_le_bytes());
     buf[HEADER_FIXED_SIZE..HEADER_FIXED_SIZE + dir_name_padded.len()]
         .copy_from_slice(&dir_name_padded);
 
@@ -410,12 +444,21 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
 
     let mut next_id = 3u32;
     let mut all_objects: Vec<(u32, Vec<u8>)> = Vec::new();
-    let root_children_meta =
-        allocate_objects(root_children, &mut next_id, cfg.big_dirs, &mut all_objects);
+    // The root directory's own SIN: fragment 2 (the system object), sharing
+    // offset 3 (it starts at byte 2*sector_size). The root's NewDirParent
+    // points back to this own SIN.
+    let root_sin = (2u32 << 8) | 3;
+    let root_children_meta = allocate_objects(
+        root_children,
+        &mut next_id,
+        cfg.big_dirs,
+        &mut all_objects,
+        root_sin,
+    );
     let root_data = if cfg.big_dirs {
-        serialize_big_dir("$", &root_children_meta)
+        serialize_big_dir("$", &root_children_meta, root_sin)
     } else {
-        serialize_new_dir("$", &root_children_meta, b"Hugo")
+        serialize_new_dir("$", &root_children_meta, b"Hugo", root_sin)
     };
 
     let root_len = root_data.len() as u64;
@@ -527,6 +570,10 @@ pub fn build_fragmented_file_disc(
     root[off + 0x18] = ((sin >> 16) & 0xFF) as u8;
     root[off + 0x19] = 0x03;
     let tail = dir_old::tail_layout(false);
+    let root_sin = (2u32 << 8) | 3;
+    root[tail.parent] = (root_sin & 0xFF) as u8;
+    root[tail.parent + 1] = ((root_sin >> 8) & 0xFF) as u8;
+    root[tail.parent + 2] = ((root_sin >> 16) & 0xFF) as u8;
     root[tail.name.0..tail.name.0 + tail.name.1]
         .copy_from_slice(&pad_to(encode_charset_str("$"), tail.name.1));
     root[tail.end_seq] = 1;

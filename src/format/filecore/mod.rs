@@ -196,6 +196,15 @@ impl<S: SectorSource> FileCoreFs<S> {
 
 impl<S: SectorSource> FileSystem for FileCoreFs<S> {
     fn root(&mut self) -> Result<Object> {
+        let sin = match self.map_type {
+            MapType::New => Some(
+                self.disc_record
+                    .as_ref()
+                    .expect("new-map has a disc record")
+                    .root_dir,
+            ),
+            MapType::Old => None,
+        };
         Ok(Object {
             name: "$".to_string(),
             load: 0,
@@ -204,10 +213,19 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
             attrs: ATTR_DIRECTORY,
             is_directory: true,
             extents: self.root_extents.clone(),
+            sin,
         })
     }
 
     fn list(&mut self, dir: &Object) -> Result<ListResult> {
+        self.list_with_parent(dir, None)
+    }
+
+    fn list_with_parent(
+        &mut self,
+        dir: &Object,
+        expected_parent_sin: Option<u32>,
+    ) -> Result<ListResult> {
         let raw = read_extents(&mut self.source, &dir.extents)?;
         match self.dir_type {
             DirType::Old | DirType::New => {
@@ -219,12 +237,14 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
                     self.new_map.as_ref(),
                     self.sharing_unit,
                     self.sml_geometry.as_ref(),
+                    expected_parent_sin,
                 )?;
                 Ok(ListResult {
                     objects: r.objects,
                     title: r.title,
                     is_broken: r.is_broken,
                     anomalies: r.anomalies,
+                    warnings: r.warnings,
                 })
             }
             DirType::Big => {
@@ -232,12 +252,14 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
                     .new_map
                     .as_ref()
                     .expect("big directories only occur on new-map discs");
-                let r = dir_big::decode_big_dir(&raw, new_map, self.sharing_unit)?;
+                let r =
+                    dir_big::decode_big_dir(&raw, new_map, self.sharing_unit, expected_parent_sin)?;
                 Ok(ListResult {
                     objects: r.objects,
                     title: r.title,
                     is_broken: r.is_broken,
                     anomalies: r.anomalies,
+                    warnings: r.warnings,
                 })
             }
         }

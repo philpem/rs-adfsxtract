@@ -46,6 +46,12 @@ pub enum Fault {
     BrokenDirectory {
         details: String,
     },
+    /// A non-fatal directory quirk (unsorted entries, wrong parent SIN,
+    /// zero-length file with a real fragment) - flagged, but the tree is
+    /// still readable.
+    DirectoryWarning {
+        details: String,
+    },
     UnreadableDirectory {
         details: String,
     },
@@ -63,6 +69,7 @@ impl Fault {
             Self::ZoneCrossCheckMismatch { .. } => "zone_cross_check_mismatch",
             Self::DiscRecordGeometryMismatch { .. } => "disc_record_geometry_mismatch",
             Self::BrokenDirectory { .. } => "broken_directory",
+            Self::DirectoryWarning { .. } => "directory_warning",
             Self::UnreadableDirectory { .. } => "unreadable_directory",
             Self::UnreadableFile { .. } => "unreadable_file",
             Self::DirectoryCycle => "directory_cycle",
@@ -74,7 +81,8 @@ impl Fault {
             Self::BootBlockChecksumMismatch { .. }
             | Self::ZoneChecksumMismatch { .. }
             | Self::ZoneCrossCheckMismatch { .. }
-            | Self::DiscRecordGeometryMismatch { .. } => Severity::Warning,
+            | Self::DiscRecordGeometryMismatch { .. }
+            | Self::DirectoryWarning { .. } => Severity::Warning,
             Self::BrokenDirectory { .. }
             | Self::UnreadableDirectory { .. }
             | Self::UnreadableFile { .. }
@@ -100,6 +108,7 @@ impl std::fmt::Display for Fault {
                 "disc record {field} differs between boot block ({boot}) and zone 0 ({zone0}); keeping boot-block geometry"
             ),
             Self::BrokenDirectory { details } => write!(f, "broken directory: {details}"),
+            Self::DirectoryWarning { details } => write!(f, "directory warning: {details}"),
             Self::UnreadableDirectory { details } => write!(f, "unreadable directory: {details}"),
             Self::UnreadableFile { details } => write!(f, "unreadable file: {details}"),
             Self::DirectoryCycle => write!(f, "directory cycle detected"),
@@ -192,6 +201,10 @@ impl Diagnostics {
 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.items.iter()
     }
 
     pub fn print_stderr(&self) -> io::Result<()> {

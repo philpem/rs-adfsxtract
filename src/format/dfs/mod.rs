@@ -66,6 +66,7 @@ fn side_object(side: u8) -> Object {
         attrs: ATTR_DIRECTORY | SIDE_MARKER_BIT | ((side as u32) << SIDE_INDEX_SHIFT),
         is_directory: true,
         extents: vec![],
+        sin: None,
     }
 }
 
@@ -119,6 +120,7 @@ impl<S: SectorSource> DfsFs<S> {
                 attrs: if e.locked { ATTR_LOCKED } else { 0 },
                 is_directory: false,
                 extents,
+                sin: None,
             });
         }
 
@@ -128,6 +130,7 @@ impl<S: SectorSource> DfsFs<S> {
             title: cat.title.clone(),
             is_broken,
             anomalies,
+            warnings: vec![],
         }
     }
 }
@@ -142,6 +145,7 @@ impl<S: SectorSource> FileSystem for DfsFs<S> {
             attrs: ATTR_DIRECTORY,
             is_directory: true,
             extents: vec![],
+            sin: None,
         })
     }
 
@@ -159,6 +163,7 @@ impl<S: SectorSource> FileSystem for DfsFs<S> {
                 title,
                 is_broken: false,
                 anomalies: vec![],
+                warnings: vec![],
             });
         }
 

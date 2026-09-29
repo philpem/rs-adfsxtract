@@ -134,6 +134,86 @@ fn nested_directories_walk_correctly() {
 }
 
 #[test]
+fn nested_directories_are_well_formed_not_reported_broken() {
+    // The synthetic builder must emit valid tail NewDirParent references at
+    // every depth (each pointing at its containing directory's SIN), so a
+    // `verify` walk reports no broken directory. This guards against the
+    // builder regression that would otherwise be required if the parent-SIN
+    // validation were ever skipped.
+    use crate::diagnostics::Diagnostics;
+    use crate::verify::verify;
+
+    let cfg = NewMapConfig::default();
+    let image = build_new_map_disc(
+        vec![SynthEntry::dir(
+            "Outer",
+            vec![SynthEntry::dir(
+                "Inner",
+                vec![SynthEntry::File(SynthFile::plain("Deep", b"deep content"))],
+            )],
+        )],
+        &cfg,
+    );
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let mut diag = Diagnostics::default();
+    let report = verify(&mut fs, &mut diag).unwrap();
+    assert!(diag.is_empty(), "diagnostics: {diag:?}");
+    assert_eq!(
+        (report.directories, report.files, report.unreadable),
+        (3, 1, 0)
+    );
+}
+
+#[test]
+fn verify_reports_a_bad_parent_sin_as_warning() {
+    // A bad tail NewDirParent is surfaced by `verify` as a warning, not a
+    // structural break: the tree is still readable.
+    use crate::diagnostics::Diagnostics;
+    use crate::verify::verify;
+
+    let cfg = NewMapConfig::default();
+    let image = bad_root_parent_disc(&cfg);
+
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let mut diag = Diagnostics::default();
+    let report = verify(&mut fs, &mut diag).unwrap();
+    assert!(
+        diag.iter().any(|d| d.fault.code() == "directory_warning"),
+        "verify should report a DirectoryWarning fault: {diag:?}"
+    );
+    assert!(
+        !diag.iter().any(|d| d.fault.code() == "broken_directory"),
+        "a wrong parent SIN must not be reported as a broken directory: {diag:?}"
+    );
+    // The directory is still walked and its file counted.
+    assert_eq!(report.files, 1);
+}
+
+#[test]
+fn parent_sin_warning_does_not_abort_strict_extraction() {
+    // Non-fatal quirks are warnings, so even `Fail` (strict) mode extracts
+    // the files rather than aborting the whole disc.
+    let cfg = NewMapConfig::default();
+    let image = bad_root_parent_disc(&cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.broken_dir_policy = BrokenDirPolicy::Fail;
+    let mut log = ExtractionLog::default();
+    let summary = walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+    assert_eq!(summary.files_extracted, 1);
+    assert!(dir.path().join("Fred").exists());
+    assert!(
+        log.entries.iter().any(|e| matches!(
+            e,
+            crate::extract::log::LogEntry::Warning { message } if message.contains("parent SIN")
+        )),
+        "expected a parent-SIN warning, got: {:?}",
+        log.entries
+    );
+}
+
+#[test]
 fn inf_sidecar_written_when_requested() {
     let cfg = NewMapConfig::default();
     let image = build_new_map_disc(
@@ -169,6 +249,45 @@ fn corrupt_root_check_byte(image_bytes: &mut [u8], sector_size: usize) {
     let tail = crate::format::filecore::dir_old::tail_layout(false);
     let root_addr = 2 * sector_size;
     image_bytes[root_addr + tail.check_byte] ^= 0xFF;
+}
+
+/// Builds a one-file new-map disc whose root `NewDirParent` is wrong, with
+/// the check byte recomputed so the only anomaly is the parent SIN - a
+/// non-fatal warning. The parent field lies inside the checksum region, so
+/// corrupting it without fixing the byte would also be a structural break.
+fn bad_root_parent_disc(cfg: &NewMapConfig) -> crate::testutil::BuiltImage {
+    let mut image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("Fred", b"x"))], cfg);
+    let sector = 1 << cfg.log2_sector_size;
+    let tail = crate::format::filecore::dir_old::tail_layout(false);
+    let root_addr = 2 * sector;
+    let dir_len = crate::format::filecore::dir_old::LARGE_DIR_SIZE;
+    {
+        let root = &mut image.bytes[root_addr..root_addr + dir_len];
+        // correct value is the root's own SIN: fragment 2 << 8 | sharing 3.
+        root[tail.parent] = 0;
+        root[tail.parent + 1] = 0;
+        root[tail.parent + 2] = 0;
+        use crate::format::filecore::checksums::{
+            ChecksumRegion, dir_checksum_accumulate, dir_checksum_fold,
+        };
+        use crate::format::filecore::dir_old::{ENTRY_SIZE, HEADER_SIZE};
+        let end_of_entries = HEADER_SIZE + ENTRY_SIZE; // one entry
+        let regions = [
+            ChecksumRegion {
+                start: 0,
+                end: end_of_entries,
+                words_first: true,
+            },
+            ChecksumRegion {
+                start: tail.tail_start + 1,
+                end: tail.dir_len - 4,
+                words_first: false,
+            },
+        ];
+        let checksum = dir_checksum_fold(dir_checksum_accumulate(root, &regions));
+        root[tail.check_byte] = checksum;
+    }
+    image
 }
 
 #[test]

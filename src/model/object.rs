@@ -31,6 +31,13 @@ pub struct Object {
     pub attrs: u32,
     pub is_directory: bool,
     pub extents: Vec<Extent>,
+    /// The object's own new-map SIN (guide §3.2), when known: `Some` for
+    /// every entry on a new-map disc, `None` on old-map/DFS. Only used for
+    /// directory objects, and only to validate the parent-reference field
+    /// when a directory is later listed - a child directory's tail
+    /// `NewDirParent` must equal its *containing* directory's SIN, so the
+    /// walker passes the containing directory's `sin` down when it recurses.
+    pub sin: Option<u32>,
 }
 
 impl Object {

@@ -58,10 +58,15 @@ pub fn walk_and_extract<FS: FileSystem>(
 ) -> Result<ExtractSummary> {
     let root = fs.root()?;
     let mut summary = ExtractSummary::default();
-    let mut stack = vec![(root, opts.output_dir.clone(), "$".to_string())];
+    // Each stack frame also carries the expected parent SIN for the
+    // directory being listed - for a FileCore new-map directory this is the
+    // SIN of the directory that contains it (the root points back to its own
+    // SIN), which `decode_dir` validates against the tail NewDirParent.
+    let root_sin = root.sin;
+    let mut stack = vec![(root, opts.output_dir.clone(), "$".to_string(), root_sin)];
     let mut visited: HashSet<Vec<(u64, u64)>> = HashSet::new();
 
-    while let Some((dir_obj, host_dir, riscos_path)) = stack.pop() {
+    while let Some((dir_obj, host_dir, riscos_path, expected_parent_sin)) = stack.pop() {
         let fingerprint: Vec<(u64, u64)> = dir_obj
             .extents
             .iter()
@@ -79,7 +84,18 @@ pub fn walk_and_extract<FS: FileSystem>(
         }
         summary.dirs_created += 1;
 
-        let listing = fs.list(&dir_obj)?;
+        let listing = fs.list_with_parent(&dir_obj, expected_parent_sin)?;
+
+        // Non-fatal quirks (unsorted entries, wrong parent SIN, zero-length
+        // file with a real fragment) are logged first so they surface even
+        // when the directory is also structurally broken and gets skipped
+        // below. They never themselves trigger Fail/Skip.
+        for w in &listing.warnings {
+            log.push(LogEntry::Warning {
+                message: format!("{riscos_path}: {w}"),
+            });
+        }
+
         if listing.is_broken {
             match opts.broken_dir_policy {
                 BrokenDirPolicy::Fail => {
@@ -118,7 +134,10 @@ pub fn walk_and_extract<FS: FileSystem>(
             let host_child = host_dir.join(&host_leaf);
 
             if obj.is_directory {
-                stack.push((obj, host_child, riscos_child));
+                // The child's parent is this directory, whose own SIN is
+                // `dir_obj.sin` - that is what the child's NewDirParent tail
+                // must reference, so pass it down as the expected parent.
+                stack.push((obj, host_child, riscos_child, dir_obj.sin));
             } else {
                 extract_file(
                     fs,

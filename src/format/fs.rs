@@ -16,6 +16,10 @@ pub struct ListResult {
     pub title: String,
     pub is_broken: bool,
     pub anomalies: Vec<String>,
+    /// Non-fatal quirks (unsorted entries, wrong parent SIN, zero-length file
+    /// with a real fragment). Reported by `info`/`verify`/`extract` as
+    /// warnings; never block a best-effort extraction.
+    pub warnings: Vec<String>,
 }
 
 pub trait FileSystem {
@@ -25,6 +29,20 @@ pub trait FileSystem {
     /// carry their disc extents; directories carry the extents of their own
     /// directory structure, readable again via `list`).
     fn list(&mut self, dir: &Object) -> Result<ListResult>;
+
+    /// Like [`list`](Self::list), but with the SIN of the directory that
+    /// contains `dir`. FileCore new-map directories store their *parent's*
+    /// SIN in the tail `NewDirParent` field (the root points back to its own
+    /// SIN), so a backend that can validate that reference needs the value
+    /// the walker already knows when it recurses. Backends without such a
+    /// field ignore it (the default just forwards to `list`).
+    fn list_with_parent(
+        &mut self,
+        dir: &Object,
+        _expected_parent_sin: Option<u32>,
+    ) -> Result<ListResult> {
+        self.list(dir)
+    }
 
     /// Streams one file object's data extents through `sink` in order, in
     /// bounded chunks. `sink` receives each chunk's disc address alongside
