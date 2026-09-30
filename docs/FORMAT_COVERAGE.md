@@ -116,9 +116,28 @@ fragmentation harness (see above).
   as a cross-check oracle and hard-disc/big-dir generator (see
   `tools/README.md`).
 
-## Coverage tooling
+## Partitioned ADFS hard discs (recognised-by-analysis, not yet exercised)
 
-`cargo llvm-cov` (with `llvm-tools-preview`) reports line/branch coverage as a
+Some real RISC OS hard discs are partitioned using **Acorn-specific schemes**
+(not MBR/GPT): ICS/Baildon IDEFS, HCCS, SJ Research Nexus and Simtec. The
+Arcology analysis code (`worker/arcworker/tools/partition.py`) documents their
+layout, including that each partition carries its own FileCore boot block at
+`partition_start + 0xC00` (disc record at `+0x1C0`), and the signatures:
+- ICS - a "Part"-seeded checksum over sector 0 and `(start_sector,size_sector)`
+  entries.
+- HCCS - an `Andy` magic at boot-block `+0x1B0`, with contiguous partitions
+  whose length is the disc record's `disc_size`.
+- Nexus - a `Net1` magic at `0x20000`.
+- Simtec - a signature detector.
+
+We do not yet scan for these; a disc that is partitioned this way would not be
+recognised at offset 0. The diagnostic drives probed (ConnerCP2024, ST3660A,
+FireballSE1.2) use none of these signatures - they are either non-ADFS or
+damaged/truncated dumps (e.g. ConnerCP2024 is a 7.5 MB image whose disc record
+claims 13 MB), so partitioning is not the cause of their non-recognition.
+Supporting these schemes is a follow-up if such media is needed.
+
+## Coverage tooling`cargo llvm-cov` (with `llvm-tools-preview`) reports line/branch coverage as a
 secondary, report-only metric. This matrix — not a coverage threshold — is the
 authoritative statement of *format* breadth.
 
