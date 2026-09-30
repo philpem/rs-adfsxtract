@@ -1,8 +1,8 @@
 //! Opt-in validation against *additional* real discs fetched at runtime from
-//! 8bs.com (The BBC and Master Computer Public Domain Library - freely
-//! licensed software). Unlike the committed fixtures, these are never bundled:
-//! each entry pins a URL and an expected SHA-256 so that a retrieval that
-//! changes is detected rather than silently shifting the test's ground truth.
+//! 8bs.com and mdfs.net (freely-distributed / public-domain software). Unlike
+//! the committed fixtures, these are never bundled: each entry pins a URL and
+//! an expected SHA-256 so that a retrieval that changes is detected rather
+//! than silently shifting the test's ground truth.
 //!
 //! Skipped entirely unless `ACORNFS_EXTERNAL_SOURCE` is set to a directory to
 //! cache downloads into. The committed `reference_media_tests`/`dfs_reference`
@@ -41,6 +41,25 @@ const MANIFEST: &[FetchSpec] = &[
         url: "https://8bs.com/pool/arc/arc-04.zip",
         sha256: "75cee6214a94db3a4799ac5b7f4d441c30ac93a0aa964bc6a60e499a06a6b004",
         expected: "ADFS new-map 800 KB; disc name 1_DataComm; clean verify",
+    },
+    // Real Acorn DFS disc from mdfs.net (J.G.Harston's freely-distributed
+    // software). This one is a truncated 800-sector image - a deliberately
+    // awkward edge case the tool must tolerate rather than reject.
+    FetchSpec {
+        label: "Utils1.ssd",
+        url: "https://mdfs.net/Mirror/Image/JGH/Utils1.ssd",
+        sha256: "96a065b1d797bb0cf2982194add984786a974687fedeca186d19b19d5cce7ba2",
+        expected: "Acorn DFS single-sided (Utilities1); a truncated 800-sector image",
+    },
+    // An HADFS disc (Harston Advanced Disk Filing System) from mdfs.net. HADFS
+    // is a different 8-bit filing system that our tool does not implement; the
+    // DFS detector should still handle it without crashing (it is currently
+    // reported as DFS). Pinned here so the mis-detection can't silently break.
+    FetchSpec {
+        label: "HADFS_System.ssd",
+        url: "https://mdfs.net/Software/HADFS/System.ssd",
+        sha256: "b3a5a86ac80c40b947d2c5be146a0c66163d5c2cbf671b031c7612915c6ba968",
+        expected: "HADFS disc (not Acorn DFS); must not crash on detection",
     },
 ];
 
@@ -177,7 +196,7 @@ fn fetch_or_cache(spec: &FetchSpec, cache: &std::path::Path) -> Vec<u8> {
 }
 
 #[test]
-fn validates_additional_8bs_discs() {
+fn validates_additional_real_discs() {
     let Ok(cache) = std::env::var("ACORNFS_EXTERNAL_SOURCE") else {
         eprintln!("skipping: ACORNFS_EXTERNAL_SOURCE not set");
         return;

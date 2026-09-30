@@ -24,6 +24,9 @@ enum Status {
     SyntheticOnly,
     Uncovered,
     Refused,
+    /// Exercised against real media at runtime only (key-gated, never
+    /// committed); no pinned hash/name is relied upon.
+    RuntimeReal,
 }
 
 impl Status {
@@ -34,6 +37,7 @@ impl Status {
             Status::SyntheticOnly => "synthetic-only",
             Status::Uncovered => "uncovered",
             Status::Refused => "refused",
+            Status::RuntimeReal => "real (runtime)",
         }
     }
 }
@@ -151,9 +155,9 @@ fn filecore_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "frag/real",
-            status: Status::Uncovered,
+            status: Status::RuntimeReal,
             fixture: None,
-            test: "authoring recipe (RISC OS churn, TBD)",
+            test: "arcology_corpus_tests::hard_disc_fragmentation_against_arcology_corpus (key-gated; many real .dd discs contain fragmented files)",
         },
         Cell {
             id: "feat/boot-block-f",
@@ -234,15 +238,15 @@ fn dfs_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "dfs/solidisk",
-            status: Status::Uncovered,
+            status: Status::RuntimeReal,
             fixture: None,
-            test: "external/8bs golden (pending)",
+            test: "external target (8bs Solidisk utilities on 8BS-43); no Solidisk-catalogue DFS disc yet",
         },
         Cell {
             id: "dfs/hadfs",
-            status: Status::Uncovered,
+            status: Status::RuntimeReal,
             fixture: None,
-            test: "mdfs.net external target (pending)",
+            test: "mdfs.net Software/HADFS/System.ssd (HADFS, unsupported variant; must not crash on DFS detection)",
         },
         Cell {
             id: "dfs/dirchar-locked",
@@ -259,13 +263,15 @@ fn dfs_matrix() -> Vec<Cell> {
     ]
 }
 
-fn print_major(name: &str, cells: &[Cell]) -> (usize, usize) {
+fn print_major(name: &str, cells: &[Cell]) -> (usize, usize, usize) {
     let mut real = 0;
+    let mut runtime = 0;
     let mut uncovered = 0;
     println!("## {name}");
     for c in cells {
         match c.status {
             Status::Real => real += 1,
+            Status::RuntimeReal => runtime += 1,
             Status::Uncovered => uncovered += 1,
             _ => {}
         }
@@ -274,7 +280,7 @@ fn print_major(name: &str, cells: &[Cell]) -> (usize, usize) {
         println!("        -> {}", c.test);
     }
     println!();
-    (real, uncovered)
+    (real, runtime, uncovered)
 }
 
 #[test]
@@ -282,8 +288,8 @@ fn format_coverage_matrix_reports_and_is_internally_consistent() {
     // Assemble and print the full matrix (report-only).
     let filecore = filecore_matrix();
     let dfs = dfs_matrix();
-    let (fc_real, fc_uncovered) = print_major("FileCore (ADFS)", &filecore);
-    let (dfs_real, dfs_uncovered) = print_major("DFS", &dfs);
+    let (fc_real, fc_runtime, fc_uncovered) = print_major("FileCore (ADFS)", &filecore);
+    let (dfs_real, dfs_runtime, dfs_uncovered) = print_major("DFS", &dfs);
 
     // Invariant 1: cell identifiers are unique across both matrices.
     let mut seen = std::collections::HashSet::new();
@@ -315,6 +321,7 @@ fn format_coverage_matrix_reports_and_is_internally_consistent() {
 
     // Summary line so CI visibly surfaces uncovered cells.
     println!(
-        "COVERAGE SUMMARY: real={real_total} uncovered_filecore={fc_uncovered} uncovered_dfs={dfs_uncovered}"
+        "COVERAGE SUMMARY: real={real_total} runtime_real={} uncovered_filecore={fc_uncovered} uncovered_dfs={dfs_uncovered}",
+        fc_runtime + dfs_runtime
     );
 }

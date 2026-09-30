@@ -17,6 +17,7 @@ an official-tool golden before they are baked into a test.
 | Status | Meaning |
 |--------|---------|
 | `real` | Exercised against a real (official-tool) disc image. |
+| `real (runtime)` | Exercised against real media fetched at runtime (key-gated, never committed, no pinned hash/name). |
 | `synthetic` | Exercised against an in-repo generated image, but cross-checked against an official golden. |
 | `synthetic-only` | Exercised only against an in-repo generated image; no golden anchor yet. |
 | `uncovered` | No test; risk of silent mis-parsing. |
@@ -51,7 +52,7 @@ Columns: **map** (old/new) × **dir** (old/new/big) × **geometry** ×
 | Sharing offset on a non-root object | `synthetic-only` | `build_new_map_disc`/big-dir paths |
 | Fragment in a big directory | `synthetic-only` | `testutil` `big_dirs` |
 | Free-chain exclusion interacting with real fragments | `synthetic` | `map_new` unit tests |
-| Real-media fragmentation | `uncovered` (golden via RISC OS churn, TBD) | authoring recipe |
+| Real-media fragmentation | `real (runtime)` | Arcology key-gated `hard_disc_fragmentation_against_arcology_corpus` (14/15 sampled real `.dd` hard discs had fragmented files) |
 
 ### Structural / metadata features
 
@@ -78,8 +79,8 @@ Columns: **vendor** × **geometry** (SSD/DSD, 40/80 trk, sect/trk) × **catalogu
 | Acorn DFS SSD | Acorn | single-sided | `real` | `data/apd01_ssd.ssd.gz` (`dfs_reference_media_tests`) |
 | Acorn DFS DSD | Acorn | double-sided interleaved | `real` | `data/8bs0_dsd.dsd.gz` (`dfs_reference_media_tests`) |
 | Watford 62-file extension | Watford | SSD or DSD | `synthetic` | `testutil` `dfs_watford_extension_round_trip` |
-| Solidisk / Opus catalogue | Solidisk/Opus | — | `uncovered` | external/8bs golden (pending) |
-| HADFS (Harston) | HADFS | — | `uncovered` | mdfs.net external target (pending) |
+| Solidisk / Opus catalogue | Solidisk/Opus | — | `real (runtime)` | 8BS-43 carries Solidisk tools; no Solidisk-catalogue DFS disc found yet |
+| HADFS (Harston) | HADFS | — | `real (runtime)` | mdfs.net `Software/HADFS/System.ssd` (unsupported variant; must not crash on DFS detection) |
 | dir-char / locked attributes on real media | any | — | `real` | `data/apd01_ssd.ssd.gz` (G/U dir chars) |
 | Catalogue bounds / broken entry | any | — | `synthetic` | `scenario_tests` |
 

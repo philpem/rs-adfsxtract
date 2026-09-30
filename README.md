@@ -66,11 +66,22 @@ network or a key):
 
 ```sh
 ACORNFS_ARCOLOGY_KEY=<key> cargo test stress_against_arcology_corpus
+# Real new-map fragmentation coverage (many sampled .dd hard discs contain
+# fragmented files; nothing is pinned or committed):
+ACORNFS_ARCOLOGY_KEY=<key> cargo test hard_disc_fragmentation_against_arcology_corpus
 ```
 
 Configurable via `ACORNFS_ARCOLOGY_API` (base URL), `ACORNFS_ARCOLOGY_MAX`
 (sample size), `ACORNFS_ARCOLOGY_EXT` (extensions to sample) and
 `ACORNFS_ARCOLOGY_MAXSIZE` (skip larger artefacts).
+
+Separately, an opt-in target validates additional pinned real discs fetched
+from 8bs.com and mdfs.net (URL + SHA-256, self-skips unless a cache dir is
+given):
+
+```sh
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
+```
 
 An optional coverage tool (report-only, not a CI gate) is available:
 
