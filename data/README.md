@@ -82,25 +82,16 @@ second side before trusting it. See `src/solidisk_reference_media_tests.rs`.
 | `solidisk_utils_side_a.ssd.gz` | Acorn-DFS-layout single-sided, "stl9a" | `7a6d3d0a6b7c957407a84b4e567bceaa91fd6de0c8ded1b4055d1bec02428189` | Solidisk DDFS utilities (19 files) |
 | `solidisk_utils_side_b.ssd.gz` | Acorn-DFS-layout single-sided, "stl9b" | `ef53506676a1077eeae50e33c9249b0fbfee6a2acf6b6b92514fe93f5793c8e3` | ADFS/DFS 2.1 system files |
 
-## Old-map hard disc fixture
+## Note on old-map hard discs (no fixture committed)
 
-`winchester_adfs_rodime.gz` is a genuine **old-map ADFS hard disc**: an Acorn
-**Winchester File Server** drive from 1984 (a Rodime drive, 256-byte sectors,
-old map, old directories, `OLDFS` containing "(C) 1984 Acorn"). Supplied by
-Phil Pemberton from archived ST506/MFM hard-drive dumps
-(`rodime_datafile2`, at `mdfs.net`-style archive /temp drive images).
-
-This is the real media the extension guide (§1.1) said was missing ("none of
-the sample images behind this guide is an old-map hard disc"). It corrects the
-guide's assumptions: old-map hard discs here use old/small (`0x500`)
-directories at `0x200` (not the `0x800` new dirs at `0x400` the guide implied),
-are addressed **linearly** (not via the S/M/L floppy interleave), and their
-free-space map's `total_sectors` records a chunk/cylinder count (594) rather
-than the image size - so `disc_size` is taken from the image length, and their
-8-bit directories legitimately carry an uncomputed (zero) check byte. See
-`src/oldmap_hard_disc_tests.rs`.
-
-| Fixture | Format | Raw image SHA-256 | Content |
-|---------|--------|-------------------|---------|
-| `winchester_adfs_rodime.gz` | Old-map ADFS hard disc, 256 B sectors, old dirs, 13,567,488 bytes | `04034978cbd26848bcb82f035b213ff14efdaf64178f8422a6beaed774c5ce63` | Acorn Winchester File Server (20 files) |
+Old-map ADFS hard discs (e.g. an Acorn Winchester File Server drive, 256-byte
+sectors, old map, old directories) are NOT committed as a binary: instead they
+are covered by a **synthetic** always-on test (`src/oldmap_hard_disc_tests.rs`)
+built from public-domain content. Real-media validation of the same format is
+covered by the opt-in corpus scan (`ACORNFS_CORPUS_DIR`), which finds genuine
+old-map hard discs (e.g. the 1984 Rodime/Acorn Winchester drives) at runtime
+without committing them. This keeps the repo free of large/copyrighted images
+while still exercising the format: linear (non-S/M/L) addressing, `disc_size`
+from the image length (the old map's `total_sectors` is a chunk/cylinder count,
+not the image size), and the uncomputed (zero) 8-bit directory check byte.
 

@@ -105,9 +105,9 @@ fn filecore_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "adfs/oldmap-hd",
-            status: Status::Real,
-            fixture: Some("winchester_adfs_rodime.gz"),
-            test: "oldmap_hard_disc_tests (real 1984 Acorn Winchester File Server disc; linear addressing, disc_size from image length, 8-bit zero check byte)",
+            status: Status::SyntheticOnly,
+            fixture: None,
+            test: "oldmap_hard_disc_tests (synthetic old-map hard disc: linear addressing, disc_size from image length) + opt-in corpus scan against real media",
         },
         Cell {
             id: "adfs/newmap-seq",

@@ -1,91 +1,81 @@
-//! Always-on regression tests against a committed **real old-map ADFS hard
-//! disc** (an Acorn Winchester File Server drive from 1984 - a Rodime drive,
-//! 256-byte sectors, old map, old directories).
+//! Always-on tests for the **old-map ADFS hard disc** handling, using synthetic
+//! images built from public-domain content - so nothing copyrighted is
+//! committed and the fixtures stay tiny (generated in-memory).
 //!
-//! The extension guide (§1.1) explicitly notes that no old-map hard disc was
-//! behind it ("none of the sample images behind this guide is an old-map hard
-//! disc, so the conclusion has not been checked against real media"). This
-//! fixture is that real media and corrects the assumptions:
+//! An old-map hard disc (e.g. an Acorn Winchester File Server drive) has
+//! 256-byte sectors, an old map, old/small directories at `0x200`, and - unlike
+//! an S/M/L floppy - is **not** an ADFS floppy geometry:
 //!
-//! - Old-map hard discs use **old/small (0x500) directories** here (attrs
-//!   still carried in the name high bits), not the `0x800` new directories the
-//!   guide implied, and the root is at `0x200` (`L_Root`), not `0x400`.
-//! - They are addressed **linearly**, not through the S/M/L sequential->
-//!   interleaved translation (a floppy geometry). The reader must not apply
-//!   SML translation to a disc whose recorded total isn't a floppy size
-//!   (640/1280/2560 sectors).
-//! - The free-space map's `total_sectors` here records a chunk/cylinder count
-//!   (594), not the image size, so `disc_size` must come the image length.
-//! - 8-bit ADFS old directories legitimately have an **uncomputed (zero)**
-//!   directory check byte; they must not be reported as broken.
+//! - Its recorded total sector count is not 640/1280/2560 (it is a
+//!   chunk/cylinder count), so the S/M/L sequential->interleaved translation
+//!   must not be applied; the disc is addressed linearly.
+//! - The free-space map's `total_sectors` is not the image size, so
+//!   `disc_size` must be reported from the image length, not `total_sectors*256`.
+//! - The directories are 8-bit style with an **uncomputed (zero)** check byte -
+//!   reader must not flag them as broken.
 //!
-//! The disc is a genuine Acorn Winchester File Server (OLDFS 34560 bytes
-//! contains "(C) 1984 Acorn"; `UTILS/Verify` is a valid BASIC program), so the
-//! extracted bytes are a real correctness check, not a self-consistent one.
+//! These were confirmed against real media (see the opt-in corpus scan), but
+//! the synthetic image below locks in the same behaviour offline and
+//! unencumbered.
 
-use std::io::{Cursor, Read};
-use std::path::Path;
+use std::io::Cursor;
 
 use tempfile::tempdir;
 
 use crate::extract::log::ExtractionLog;
 use crate::extract::report::build_report;
 use crate::extract::walker::{BrokenDirPolicy, ExtractOptions, walk_and_extract};
-use crate::format::filecore::FileCoreFs;
+use crate::format::filecore::{DirType, FileCoreFs, MapType};
 use crate::io::rescue::BadSectorPolicy;
+use crate::testutil::{SynthFile, build_old_map_disc};
 
-const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/");
-const DISC_BYTES: u64 = 13_567_488;
+/// Public-domain prose used as file data (a Shakespeare passage, in the public
+/// domain) - keeps the test unencumbered and the images compressible/random.
+const PROSE_A: &[u8] = b"But soft, what light through yonder window breaks?\nIt is the east, and Juliet is the sun.\nArise, fair sun, and kill the envious moon,\nWho is already sick and pale with grief,\nThat thou her maid art far more fair than she:\n";
+const PROSE_B: &[u8] = b"Her vestal livery is but sick and green, and none but fools do wear it; cast it off.\nIt is my lady, O, it is my love!\n";
 
-fn load_fixture(name: &str) -> Vec<u8> {
-    let path = Path::new(DATA_DIR).join(name);
-    let file = std::fs::File::open(&path)
-        .unwrap_or_else(|e| panic!("open fixture {}: {e}", path.display()));
-    let mut gz = flate2::read::GzDecoder::new(file);
-    let mut bytes = Vec::new();
-    gz.read_to_end(&mut bytes).unwrap();
-    bytes
-}
-
-fn opts(dir: &Path) -> ExtractOptions {
-    ExtractOptions {
-        output_dir: dir.to_path_buf(),
-        write_inf: false,
-        dry_run: false,
-        broken_dir_policy: BrokenDirPolicy::Fail,
-        bad_sector_policy: BadSectorPolicy::NullFill,
-        rescue_map: None,
-    }
-}
-
-fn assert_content(dir: &Path, name: &str, expected_len: usize, expected_crc: u32) {
-    let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
-    assert_eq!(bytes.len(), expected_len, "unexpected length for {name}");
-    assert_eq!(
-        crc32fast::hash(&bytes),
-        expected_crc,
-        "content mismatch for {name}"
-    );
+/// Builds a small synthetic old-map disc whose recorded total sector count is
+/// NOT an S/M/L floppy size, so it must be treated as a hard disc (linear
+/// addressing) rather than through the floppy geometry.
+fn build_synthetic_oldmap_hard_disc() -> Vec<u8> {
+    let files = vec![
+        SynthFile::plain("!BOOT", b"CLOSE#0\nCHAIN FileServ\n"),
+        SynthFile::plain("FileServ", PROSE_A),
+        SynthFile::plain("Verify", PROSE_B),
+        SynthFile::plain("Format", b"*=FORMAT 40 or 80\n"),
+    ];
+    build_old_map_disc(files, true, "WinFileSrv").bytes
 }
 
 #[test]
-fn oldmap_hard_disc_extracts_the_winchester_fileserver() {
-    let bytes = load_fixture("winchester_adfs_rodime.gz");
-    assert_eq!(bytes.len() as u64, DISC_BYTES);
+fn oldmap_hard_disc_is_addressed_linearly_and_sized_from_image() {
+    let bytes = build_synthetic_oldmap_hard_disc();
+    // Sanity: this tiny synthetic disc must not accidentally report an S/M/L
+    // floppy total (640/1280/2560) - that's what forces the hard-disc path.
+    let total = bytes.len() as u64 / 256;
+    assert!(
+        !matches!(total, 640 | 1280 | 2560),
+        "synthetic disc total {total} must not be an S/M/L floppy size"
+    );
 
-    let mut fs = FileCoreFs::open(Cursor::new(bytes)).expect("recognised as FileCore");
-    assert_eq!(fs.map_type, crate::format::filecore::MapType::Old);
-    assert_eq!(fs.dir_type, crate::format::filecore::DirType::Old);
+    let mut fs = FileCoreFs::open(Cursor::new(bytes.clone())).expect("recognised as FileCore");
+    assert_eq!(fs.map_type, MapType::Old);
+    assert_eq!(fs.dir_type, DirType::Old);
 
     let report = build_report(&mut fs).unwrap();
     assert_eq!(report.filesystem, "FileCore");
     assert_eq!(report.map_type, "old");
     assert_eq!(report.dir_type, "old");
-    // disc_size must be the image length, not the map's chunk count (594).
-    assert_eq!(report.disc_size, Some(DISC_BYTES));
+    // disc_size must be the image length, NOT total_sectors*256 (total is a
+    // chunk/cylinder count on an old-map hard disc, not the image size).
+    assert_eq!(
+        report.disc_size,
+        Some(bytes.len() as u64),
+        "old-map hard disc disc_size must be the image length"
+    );
     assert!(
         report.root_check_byte_ok,
-        "8-bit old directories have an uncomputed (zero) check byte; must not be flagged broken"
+        "old-map hard disc dirs are 8-bit (uncomputed/zero check byte); must not be broken"
     );
     assert!(
         report.broken_directories.is_empty(),
@@ -95,56 +85,18 @@ fn oldmap_hard_disc_extracts_the_winchester_fileserver() {
 
     let dir = tempdir().unwrap();
     let mut log = ExtractionLog::default();
-    let summary = walk_and_extract(&mut fs, &opts(dir.path()), &mut log).unwrap();
-    assert_eq!(summary.files_extracted, 20, "log: {:?}", log.entries);
-    assert_eq!(summary.dirs_created, 4);
-
-    for name in [
-        "!BOOT", "BOOT", "FileServ", "OLDFS", "Format", "LIBRARY", "UTILS",
-    ] {
+    let opts = ExtractOptions {
+        output_dir: dir.path().to_path_buf(),
+        write_inf: false,
+        dry_run: false,
+        broken_dir_policy: BrokenDirPolicy::Fail,
+        bad_sector_policy: BadSectorPolicy::NullFill,
+        rescue_map: None,
+    };
+    let summary = walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+    assert_eq!(summary.files_extracted, 4, "log: {:?}", log.entries);
+    for name in ["!BOOT", "FileServ", "Verify", "Format"] {
         assert!(dir.path().join(name).exists(), "missing {name}");
     }
-    for ut in [
-        "Weditor",
-        "Verify",
-        "SuperForm",
-        "Rtrve.1",
-        "HardError,f1b",
-        "GetLost",
-        "Exall",
-        "CopyFiles",
-        "Catall",
-        "Bakup.1",
-    ] {
-        assert!(
-            dir.path().join("UTILS").join(ut).exists(),
-            "missing UTILS/{ut}"
-        );
-    }
-    // Real content checks (an actual 1984 Acorn Winchester File Server).
-    assert_content(dir.path(), "!BOOT", 56, 0xa97295f6);
-    assert_content(dir.path(), "FileServ", 34512, 0x3bc14f78);
-    assert_content(dir.path(), "OLDFS", 34560, 0x4f7e3e18);
-    assert_content(dir.path(), "UTILS/Verify", 730, 0x5ef515c3);
-    assert_content(dir.path(), "UTILS/Weditor", 6406, 0x2af51285);
-    assert_content(dir.path(), "Format/SuperForm", 9950, 0x9a1e476a);
-
-    // And it is genuinely an OLDFS Winchester fileserver, not junk.
-    let ol = std::fs::read(dir.path().join("OLDFS")).unwrap();
-    let has_banner = ol.windows(b"Winchester".len()).any(|w| w == b"Winchester");
-    let has_copyright = ol
-        .windows(b"(C) 1984 Acorn".len())
-        .any(|w| w == b"(C) 1984 Acorn");
-    assert!(
-        has_banner && has_copyright,
-        "OLDFS should contain the Acorn Winchester File Server banner"
-    );
-}
-
-#[test]
-fn oldmap_hard_disc_fixture_is_gzip_deterministic() {
-    assert_eq!(
-        load_fixture("winchester_adfs_rodime.gz").len() as u64,
-        DISC_BYTES
-    );
+    assert_eq!(std::fs::read(dir.path().join("Verify")).unwrap(), PROSE_B);
 }
