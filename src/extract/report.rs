@@ -64,11 +64,15 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
             )
         }
         MapType::New => {
+            // Prefer the boot-block disc record (authoritative for geometry),
+            // which open() has already had the zone-0 *identity* fields merged
+            // into it. The raw `zone0_disc_record` may be a zeroed/unreliable
+            // copy (a disc whose zone map sits elsewhere); only fall back to it
+            // when no boot-block record exists.
             let dr = fs
-                .new_map
+                .disc_record
                 .as_ref()
-                .map(|m| &m.zone0_disc_record)
-                .or(fs.disc_record.as_ref())
+                .or_else(|| fs.new_map.as_ref().map(|m| &m.zone0_disc_record))
                 .expect("new-map FileCoreFs always has a disc record");
             (
                 Some(dr.disc_name_str()),
