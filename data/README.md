@@ -49,19 +49,33 @@ derived from these exact images.
 
 ## Solidisk fixtures
 
-Two genuine **Solidisk DDFS** discs (sweh's archive, `/tmp/stl9.zip`): side A is
-the Solidisk DDFS **utility set** (`FORMAT`, `DISCOPY`, `ARCHIVE`, `CATALL`,
-`PASSWD`, `PROTECT`, `RECOVER`, `RESTORE`, `SPECIFY`, `SDRVBAK`, `PARK`, ...),
-side B carries ADFS/DFS 2.1 system files. These are standard single-density
-single-sided discs with Acorn-DFS-layout catalogues (Solidisk DDFS is a density
-enhancement, not a layout change), so they provide real third-party media for
+Two genuine **Solidisk DDFS** discs, posted by Stephen Harris (**sweh**) to the
+Stardot archive-submissions thread
+(https://stardot.org.uk/forums/viewtopic.php?t=5011): side A is the Solidisk
+DDFS **utility set** (`FORMAT`, `DISCOPY`, `ARCHIVE`, `CATALL`, `PASSWD`,
+`PROTECT`, `RECOVER`, `RESTORE`, `SPECIFY`, `SDRVBAK`, `PARK`, ...), side B
+carries ADFS/DFS 2.1 system files. Solidisk DDFS is a density enhancement, not
+a layout change, so the catalogue layout is standard Acorn-DFS-compatible; the
+discs are single-density single-sided and provide real third-party media for
 the `dfs/solidisk` format cell.
 
-Side A doubles as a detector regression: its single-sided file data lands at the
-interleaved side-1 catalogue offset, which previously caused the double-sided
-probe to report it as double-sided (inflating disc_size to 438272 and inventing
-a phantom side 1). The detector now requires real evidence of a second side
-before trusting it. See `src/solidisk_reference_media_tests.rs`.
+These are effectively the **driver/utilities disc that shipped with the action
+Solidisk hardware**, i.e. freely redistributable; the images are committed
+in-repo compressed, so a Stardot login is *not* required to reproduce the
+tests (the original `/tmp/stl9.zip` attachment is citable for provenance).
+
+Side A doubles as a detector regression: its single-sided file data lands at
+the interleaved side-1 catalogue offset, which previously caused the
+double-sided probe to report it as double-sided (inflating disc_size to 438272
+and inventing a phantom side 1). The detector now requires real evidence of a
+second side before trusting it. See `src/solidisk_reference_media_tests.rs`.
+
+> Known Solidisk-specific variants not yet covered by a fixture (noted from
+> sweh's MMB_Utils): 320 KB double-density discs record an 11-bit start sector
+> (bit stolen from the load high bits), and more-than-31-file Solidisk discs
+> use a *chained* catalogue rather than a fixed second block. Neither is
+> exercised by the committed 200 KB fixtures; the 11-bit disk-size field *is*
+> now decoded (see the three-high-bit fix and its regression test).
 
 | Fixture | Format | Raw image SHA-256 | Content |
 |---------|--------|-------------------|---------|

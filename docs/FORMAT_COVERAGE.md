@@ -121,3 +121,19 @@ fragmentation harness (see above).
 `cargo llvm-cov` (with `llvm-tools-preview`) reports line/branch coverage as a
 secondary, report-only metric. This matrix — not a coverage threshold — is the
 authoritative statement of *format* breadth.
+
+Baseline against the full library test suite (unit + all always-on reference
+images): **line 89.60%, branch 92.16%** (`cargo llvm-cov --summary-only --lib`).
+The notably low modules are the CLI/binary and diagnostic paths that the
+library test suite doesn't drive directly:
+
+| Module | Line | Why |
+|--------|------|-----|
+| `cli.rs` | ~0% | CLI arg parsing exercised only by the binary, not the lib |
+| `extract/log.rs` | ~10% | Extraction-log rendering used by binary output paths |
+| `diagnostics.rs` | ~15% | Structured diagnostics serialisation |
+| `verify.rs` | ~62% | Verification traversals partly covered via `verify_filecore_volume` |
+| `extract/report.rs` | ~64% | Report/JSON rendering |
+
+These aren't format cells; they'd need CLI/integration tests (or a public API)
+to raise. The format matrix above is the meaningful coverage statement.
