@@ -36,9 +36,9 @@ Columns: **map** (old/new) × **dir** (old/new/big) × **geometry** ×
 | D | old | new | 800 KB, 80 trk × 2 sides, 1024 B sect | interleaved | 1 | `real` | `data/adfs800D.adf.gz` |
 | E | new | new | 800 KB, 5 sect/trk | interleaved | 1 | `real` | `data/adfs800E.adf.gz` |
 | F | new | new | 1.6 MB, 10 sect/trk | interleaved | 4 | `real` | `data/adfs1600F.adf.gz` |
-| E+ | new | big | 800 KB | interleaved | 1 | `synthetic-only` | `testutil` `big_dirs` |
-| F+ | new | big | 1.6 MB | interleaved | 4 | `synthetic-only` | `testutil` `big_dirs` |
-| G | new | big | hard disc | interleaved | n | `synthetic-only` | `testutil` `big_dirs` |
+| E+ | new | big | 800 KB | interleaved | 1 | `synthetic-only` (real media available via corpus scan) | `testutil` `big_dirs` |
+| F+ | new | big | 1.6 MB | interleaved | 4 | `synthetic-only` (real floppies exist in corpora) | `testutil` `big_dirs` |
+| G | new | big | hard disc | interleaved | n | `synthetic-only` (real media available via corpus scan) | `testutil` `big_dirs` |
 | Old-map hard disc | old | new | 256 B sect, drive-geometry | linear | 1 | `real` | `data/winchester_adfs_rodime.gz` (real 1984 Acorn Winchester File Server) — note: real media shows old/small `0x500` dirs at `0x200`, linear addressing, disc_size = image length, and an uncomputed (zero) directory check byte; the guide's `0x400`/`0x800` new-dir assumption is corrected here |
 | New-map sequential track order | new | new | any | sequential flag set | n | `refused` | synthetic refusal test |
 
