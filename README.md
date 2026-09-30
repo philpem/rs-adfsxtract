@@ -112,6 +112,19 @@ no hash is pinned, so it is purely a real-media coverage/health check:
 ACORNFS_CORPUS_DIR=/mnt/nfs cargo test --lib scan_corpus_for_format_coverage
 ```
 
+An opt-in **differential harness** (report-only, never a CI gate) runs this
+reader and an independent second reader, [ejmount/acorn-dfs](https://github.com/ejmount/acorn-dfs),
+over the same committed corpus and synthetic matrix and reports where their
+recovered file inventories diverge. Because the other reader is *independent*
+(a different author and parse path), a divergence is genuine cross-validation
+rather than the self-confirming builder round-trip; on a divergence it dumps
+both readers' raw readings so a cell can be adjudicated rather than assumed.
+It requires fetching the git dependency, so it is feature-gated:
+
+```sh
+cargo test --features differential --test differential -- --nocapture
+```
+
 An optional coverage tool (report-only, not a CI gate) is available:
 
 ```sh
