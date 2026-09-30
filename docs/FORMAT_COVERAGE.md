@@ -78,8 +78,8 @@ Columns: **vendor** × **geometry** (SSD/DSD, 40/80 trk, sect/trk) × **catalogu
 |------|--------|----------|--------|----------------|
 | Acorn DFS SSD | Acorn | single-sided | `real` | `data/apd01_ssd.ssd.gz` (`dfs_reference_media_tests`) |
 | Acorn DFS DSD | Acorn | double-sided interleaved | `real` | `data/8bs0_dsd.dsd.gz` (`dfs_reference_media_tests`) |
-| Watford 62-file extension | Watford | SSD or DSD | `synthetic` | `testutil` `dfs_watford_extension_round_trip` |
-| Solidisk / Opus catalogue | Solidisk/Opus | — | `real (runtime)` | 8BS-43 carries Solidisk tools; no Solidisk-catalogue DFS disc found yet |
+| Watford 62-file extension | Watford | SSD or DSD | `real (runtime)` | `BGAME1_A.BBC` (genuine 41-entry Watford disc) + synthetic regression for the total_sectors/image-size divergence bug |
+| Solidisk / Opus catalogue | Solidisk/Opus | — | `real (runtime)` | `Eagle_Empire.ssd` (single-density, recovered from a Solidisk DDFS original); true double-density DDFS is an unsupported variant |
 | HADFS (Harston) | HADFS | — | `real (runtime)` | mdfs.net `Software/HADFS/System.ssd` (unsupported variant; must not crash on DFS detection) |
 | dir-char / locked attributes on real media | any | — | `real` | `data/apd01_ssd.ssd.gz` (G/U dir chars) |
 | Catalogue bounds / broken entry | any | — | `synthetic` | `scenario_tests` |
@@ -96,6 +96,11 @@ the matrix, but is **never** a committed-test dependency. Sources found:
   HADFS System disc (unsupported variant).
 - bbcmicro.co.uk - a large archive of real Acorn DFS game discs (single- and
   double-sided; a few are truncated/100 KB, which is an extra edge case).
+- The BBC Lives mirror at rk.nvg.ntnu.no - genuine Watford DFS discs (the
+  62-file extension), including one that exposed a real reader bug (see the
+  divergence note under `dfs/watford-62`).
+- Stardot - a Solidisk-recovered single-density game disc (sweh's archive
+  posts).
 
 Stardot.org.uk is primarily forums plus links out to mdfs.net and
 retrosoftware.co.uk; it does not host a crawlable disc/hard-disc image archive,

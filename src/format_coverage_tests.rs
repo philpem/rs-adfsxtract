@@ -232,15 +232,15 @@ fn dfs_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "dfs/watford-62",
-            status: Status::Synthetic,
+            status: Status::RuntimeReal,
             fixture: None,
-            test: "testutil::dfs_watford_extension_round_trip",
+            test: "external target (BGAME1_A.BBC, genuine Watford 62-file disc) + testutil::watford_extension_beyond_declared_total_is_extracted (regression for the total_sectors/image-size divergence bug)",
         },
         Cell {
             id: "dfs/solidisk",
             status: Status::RuntimeReal,
             fixture: None,
-            test: "external target (8bs Solidisk utilities on 8BS-43); no Solidisk-catalogue DFS disc yet",
+            test: "external target (Eagle_Empire.ssd, a single-density disc recovered from a Solidisk DDFS original); true double-density Solidisk DDFS geometry is an unsupported variant",
         },
         Cell {
             id: "dfs/hadfs",

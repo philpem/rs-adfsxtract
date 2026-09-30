@@ -1115,6 +1115,7 @@ pub fn build_sml_disc(files: &[SynthFile], total_sectors: u32, disc_name: &str) 
 // DFS (Disc Filing System) builder
 // ---------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct DfsFile {
     pub name: String,
     pub dir_char: char,
@@ -1363,6 +1364,36 @@ pub fn build_dfs_disc(sides: Vec<DfsSideSpec>) -> BuiltImage {
     }
 
     BuiltImage { bytes: disc }
+}
+
+/// Builds a Watford DFS disc whose catalogue declares a `total_sectors` *smaller*
+/// than the physical image, with the 62-file-extension files stored beyond that
+/// declared total. This reproduces the on-disc quirk found on genuine Watford
+/// media (a 200 KB image whose catalogue reports ~445 sectors): the declared
+/// total is unreliable, so file data runs must be bounded by the actual image
+/// size, not it. Used by the regression test that guards the corresponding
+/// reader fix.
+pub fn build_watford_divergent_total_disc(files: Vec<DfsFile>) -> BuiltImage {
+    assert!(files.len() > 31, "Watford extension requires >31 files");
+    // Replicate the placement algorithm so we can set the declared total to the
+    // first extension file's start sector - exactly the divergence seen on real
+    // Watford discs, where the base block fits within the declared total but
+    // the extension block does not.
+    let mut next = 4u32;
+    let mut ext_start = 0u32;
+    for (i, f) in files.iter().enumerate() {
+        if i == 31 {
+            ext_start = next;
+        }
+        next += (f.content.len() as u32).div_ceil(256).max(1);
+    }
+
+    let mut img = build_dfs_disc(vec![DfsSideSpec::new("WATFORD", files)]);
+    // Patch the side-0 catalogue's total_sectors (s1[6] high bits + s1[7] low).
+    let s1 = 0x100usize;
+    img.bytes[s1 + 6] = (img.bytes[s1 + 6] & 0xFC) | (((ext_start >> 8) & 0x3) as u8);
+    img.bytes[s1 + 7] = (ext_start & 0xFF) as u8;
+    img
 }
 
 #[cfg(test)]
@@ -1737,6 +1768,65 @@ mod tests {
         assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
         assert_eq!(listing.objects.len(), 40);
         assert!(listing.objects.iter().any(|o| o.name == "F39"));
+    }
+
+    #[test]
+    fn watford_extension_beyond_declared_total_is_extracted() {
+        use crate::extract::report::build_dfs_report;
+        use crate::format::dfs::DfsFs;
+
+        // Regression for a real bug found on genuine Watford media: the
+        // catalogue records a `total_sectors` smaller than the physical image
+        // (a 200 KB image reported ~445 sectors), so extension files stored at
+        // high sectors were wrongly rejected as out-of-bounds and silently
+        // dropped. The reader must bound entries by the *actual* image size,
+        // not the unreliable declared total, and this quirk must be surfaced
+        // as a non-fatal warning.
+        //
+        // The declared total is set to the first extension file's start sector,
+        // so exactly the extension block lies beyond it - the same shape as the
+        // real disc. Every file remains physically present in the image.
+        let files: Vec<DfsFile> = (0..40)
+            .map(|i| DfsFile::plain(&format!("F{i}"), &[0xABu8; 600]))
+            .collect();
+        let image = build_watford_divergent_total_disc(files.clone());
+        let mut fs = DfsFs::open(image.cursor()).unwrap();
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+
+        // All 40 entries (including the 9 in the Watford extension block) must
+        // be present, not just the ones within the (too-small) declared total.
+        assert_eq!(
+            listing.objects.len(),
+            40,
+            "extension files beyond the declared total were dropped: {:?}",
+            listing.anomalies
+        );
+        // A tail file must be readable with its real content.
+        let tail = listing
+            .objects
+            .iter()
+            .find(|o| o.name == "F39")
+            .expect("F39 present");
+        let mut collected = Vec::new();
+        fs.read_object(tail, &mut |_a, c| {
+            collected.extend_from_slice(c);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, vec![0xABu8; 600]);
+
+        // The divergence must be reported as a non-fatal warning, not silently
+        // accepted.
+        let report = build_dfs_report(&mut fs).unwrap();
+        assert!(
+            report
+                .directory_warnings
+                .iter()
+                .any(|w| w.contains("diverg")),
+            "expected a total_sectors/image-size divergence warning: {:?}",
+            report.directory_warnings
+        );
     }
 
     /// Writes a set of "donor" disc images (an ADFS S, an ADFS M, an E-format

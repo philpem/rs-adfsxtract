@@ -84,6 +84,30 @@ const MANIFEST: &[FetchSpec] = &[
         sha256: "40d1ff5ea0bc99bcc919c1ce164ad836b7f4de3b947627e1efb844f3e7e2039d",
         expected: "Acorn DFS single-sided game disc",
     },
+    // A genuine Watford DFS 62-file-extension disc from The BBC Lives mirror
+    // hosted at rk.nvg.ntnu.no. This media exposed a real reader bug: the
+    // catalogue's total_sectors (445) is far smaller than the physical image
+    // (200 KB), and its extension-block files live beyond that declared total.
+    // The reader must bound entries by the image size, and this quirk must be
+    // surfaced as a divergence warning (see the synthetic regression in
+    // testutil::watford_extension_beyond_declared_total_is_extracted).
+    FetchSpec {
+        label: "BGAME1_A.BBC",
+        url: "https://rk.nvg.ntnu.no/bbc/disk/watford/games/bgame1_a.zip",
+        sha256: "c0bd98515338b44a3494faa3b51c673c85351308f52a0c0bad2e7ca3eee6abd1",
+        expected: "Watford DFS disc, 62-file extension (41 catalogue entries), declared total smaller than image",
+    },
+    // A single-density Acorn DFS game disc recovered from a Solidisk DDFS
+    // (double-density) original - posted to Stardot by sweh. Standard DFS
+    // layout, but provenance is Solidisk hardware; kept for the real solidisk
+    // cell (genuine double-density Solidisk DDFS discs are a separate,
+    // unsupported variant).
+    FetchSpec {
+        label: "Eagle_Empire.ssd",
+        url: "https://stardot.org.uk/forums/download/file.php?id=3423",
+        sha256: "5d5e83cc9d85df22e6a2469293ba1d147f670c2a861a6ed285c5886d0ac1ae2c",
+        expected: "Acorn DFS single-density game disc (recovered from a Solidisk DDFS original)",
+    },
 ];
 
 fn sha256_hex(bytes: &[u8]) -> String {
