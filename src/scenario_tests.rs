@@ -692,3 +692,28 @@ fn newmap_sequential_track_order_refused() {
         "expected Unsupported, got {err:?}"
     );
 }
+
+#[test]
+fn truncated_dump_is_flagged_in_info() {
+    // A truncated/partial capture (the image is shorter than the size recorded
+    // on disc) must be surfaced as a non-fatal warning in `info`, not silently
+    // accepted. (Observed on a real drive: a 7.5 MB image whose disc record
+    // claims 13 MB.)
+    use crate::extract::report::build_report;
+
+    let cfg = NewMapConfig::default();
+    let mut image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain("F", b"x"))], &cfg);
+    let full = image.bytes.len();
+    image.bytes.truncate(full - 1); // simulate an aborted capture
+
+    let mut fs = FileCoreFs::open(image.cursor()).expect("still opens after truncation");
+    let report = build_report(&mut fs).unwrap();
+    assert!(
+        report
+            .directory_warnings
+            .iter()
+            .any(|w| w.contains("truncated")),
+        "expected a truncation warning, got {:?}",
+        report.directory_warnings
+    );
+}

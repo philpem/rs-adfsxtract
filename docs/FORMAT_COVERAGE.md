@@ -133,9 +133,10 @@ layout, including that each partition carries its own FileCore boot block at
 We do not yet scan for these; a disc that is partitioned this way would not be
 recognised at offset 0. The diagnostic drives probed (ConnerCP2024, ST3660A,
 FireballSE1.2) use none of these signatures - they are either non-ADFS or
-damaged/truncated dumps (e.g. ConnerCP2024 is a 7.5 MB image whose disc record
-claims 13 MB), so partitioning is not the cause of their non-recognition.
-Supporting these schemes is a follow-up if such media is needed.
+truncated/partial captures, which `info` now **detects and warns about**: an
+image whose recorded disc size exceeds the actual image length is reported as
+"image is truncated/partial" (see `report.rs`). Supporting these partition
+schemes is a follow-up if such media is needed.
 
 ## Coverage tooling`cargo llvm-cov` (with `llvm-tools-preview`) reports line/branch coverage as a
 secondary, report-only metric. This matrix — not a coverage threshold — is the

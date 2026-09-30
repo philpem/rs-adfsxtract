@@ -97,7 +97,21 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
 
     let root = fs.root()?;
     let root_list = fs.list_with_parent(&root, root.sin)?;
-    let (broken_directories, directory_warnings) = collect_directory_health(fs);
+    let (broken_directories, mut directory_warnings) = collect_directory_health(fs);
+
+    // A truncated/partial dump is worth flagging rather than silently accepted:
+    // the on-disc disc record records a size larger than the image we actually
+    // have (e.g. ConnerCP2024.dd is a 7.5 MB file whose disc record claims
+    // 13 MB, i.e. a partial/aborted capture).
+    let image_len = fs.total_bytes()?;
+    if let Some(ds) = disc_size
+        && image_len < ds
+        && disc_size != Some(image_len)
+    {
+        directory_warnings.push(format!(
+            "image is truncated/partial: disc records {ds} bytes but the image is only {image_len} bytes"
+        ));
+    }
 
     Ok(DiscReport {
         filesystem: "FileCore",
