@@ -86,11 +86,22 @@ Columns: **vendor** × **geometry** (SSD/DSD, 40/80 trk, sect/trk) × **catalogu
 
 ## External real-disc validation (opt-in)
 
-`external_real_media_tests` pulls additional public-domain discs from 8bs.com
-at runtime (URL + SHA-256 pinned, self-skips unless `ACORNFS_EXTERNAL_SOURCE`
-is set to a cache directory). It validates the tool against more real media and
-feeds real-media facts back into the matrix, but is **never** a committed-test
-dependency.
+`external_real_media_tests` pulls additional real discs at runtime from
+**8bs.com**, **mdfs.net** and **bbcmicro.co.uk** (URL + SHA-256 pinned,
+self-skips unless `ACORNFS_EXTERNAL_SOURCE` is set to a cache directory). It
+validates the tool against more real media and feeds real-media facts back into
+the matrix, but is **never** a committed-test dependency. Sources found:
+- 8bs.com - public-domain BBC/Master discs (ADFS L/E and DFS).
+- mdfs.net - J.G.Harston's freely-distributed software (Acorn DFS discs) and an
+  HADFS System disc (unsupported variant).
+- bbcmicro.co.uk - a large archive of real Acorn DFS game discs (single- and
+  double-sided; a few are truncated/100 KB, which is an extra edge case).
+
+Stardot.org.uk is primarily forums plus links out to mdfs.net and
+retrosoftware.co.uk; it does not host a crawlable disc/hard-disc image archive,
+so it is not used as a source. Genuine RISC OS hard-disc images (the source of
+real new-map fragmentation) live on Arcology and are covered by the key-gated
+fragmentation harness (see above).
 
 ## Authoring / independent generator
 

@@ -1,8 +1,9 @@
 //! Opt-in validation against *additional* real discs fetched at runtime from
-//! 8bs.com and mdfs.net (freely-distributed / public-domain software). Unlike
-//! the committed fixtures, these are never bundled: each entry pins a URL and
-//! an expected SHA-256 so that a retrieval that changes is detected rather
-//! than silently shifting the test's ground truth.
+//! 8bs.com, mdfs.net and bbcmicro.co.uk (freely-distributed / public-domain
+//! software and game discs). Unlike the committed fixtures, these are never
+//! bundled: each entry pins a URL and an expected SHA-256 so that a retrieval
+//! that changes is detected rather than silently shifting the test's ground
+//! truth.
 //!
 //! Skipped entirely unless `ACORNFS_EXTERNAL_SOURCE` is set to a directory to
 //! cache downloads into. The committed `reference_media_tests`/`dfs_reference`
@@ -60,6 +61,28 @@ const MANIFEST: &[FetchSpec] = &[
         url: "https://mdfs.net/Software/HADFS/System.ssd",
         sha256: "b3a5a86ac80c40b947d2c5be146a0c66163d5c2cbf671b031c7612915c6ba968",
         expected: "HADFS disc (not Acorn DFS); must not crash on detection",
+    },
+    // Real Acorn DFS game discs from bbcmicro.co.uk's freely-hosted archive.
+    // A 100 KB single-sided disc (a geometry the committed 200 KB fixture
+    // doesn't cover) and a double-sided disc with an independent side-1
+    // catalogue, both genuine Acorn DFS media (copyrighted -> runtime only).
+    FetchSpec {
+        label: "bbcmicro_pentagram.ssd",
+        url: "https://www.bbcmicro.co.uk/gameimg/discs/4574/Disc999-pentagram_release.ssd",
+        sha256: "7aea6738465c9271dad49534563d49812ab0e3ab4984357c1cb4cc9356771919",
+        expected: "Acorn DFS single-sided 100 KB game disc",
+    },
+    FetchSpec {
+        label: "bbcmicro_pontoon.dsd",
+        url: "https://www.bbcmicro.co.uk/gameimg/discs/4539/Disc999-PontoonYaketyYak2025Hack.dsd",
+        sha256: "2089712cdc925e4bf71dccb729d837b9b75fe7ccf7e1af9d8af8db99894ca3e7",
+        expected: "Acorn DFS double-sided game disc (SPEECHGAMES), independent side-1 catalogue",
+    },
+    FetchSpec {
+        label: "bbcmicro_holmoboy.ssd",
+        url: "https://www.bbcmicro.co.uk/gameimg/discs/4573/Disc999-HomoSapiens.ssd",
+        sha256: "40d1ff5ea0bc99bcc919c1ce164ad836b7f4de3b947627e1efb844f3e7e2039d",
+        expected: "Acorn DFS single-sided game disc",
     },
 ];
 
