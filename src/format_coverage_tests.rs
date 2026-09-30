@@ -238,9 +238,9 @@ fn dfs_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "dfs/solidisk",
-            status: Status::RuntimeReal,
-            fixture: None,
-            test: "external target (Eagle_Empire.ssd, a single-density disc recovered from a Solidisk DDFS original); true double-density Solidisk DDFS geometry is an unsupported variant",
+            status: Status::Real,
+            fixture: Some("solidisk_utils_side_a.ssd.gz"),
+            test: "solidisk_reference_media_tests (real Solidisk DDFS utilities disc, incl. the double-sided false-positive regression)",
         },
         Cell {
             id: "dfs/hadfs",

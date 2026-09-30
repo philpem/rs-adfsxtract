@@ -47,3 +47,24 @@ The raw disc bytes are decompressed from `.gz` for the tests; the per-file
 CRC-32 and byte-length assertions in `src/dfs_reference_media_tests.rs` were
 derived from these exact images.
 
+## Solidisk fixtures
+
+Two genuine **Solidisk DDFS** discs (sweh's archive, `/tmp/stl9.zip`): side A is
+the Solidisk DDFS **utility set** (`FORMAT`, `DISCOPY`, `ARCHIVE`, `CATALL`,
+`PASSWD`, `PROTECT`, `RECOVER`, `RESTORE`, `SPECIFY`, `SDRVBAK`, `PARK`, ...),
+side B carries ADFS/DFS 2.1 system files. These are standard single-density
+single-sided discs with Acorn-DFS-layout catalogues (Solidisk DDFS is a density
+enhancement, not a layout change), so they provide real third-party media for
+the `dfs/solidisk` format cell.
+
+Side A doubles as a detector regression: its single-sided file data lands at the
+interleaved side-1 catalogue offset, which previously caused the double-sided
+probe to report it as double-sided (inflating disc_size to 438272 and inventing
+a phantom side 1). The detector now requires real evidence of a second side
+before trusting it. See `src/solidisk_reference_media_tests.rs`.
+
+| Fixture | Format | Raw image SHA-256 | Content |
+|---------|--------|-------------------|---------|
+| `solidisk_utils_side_a.ssd.gz` | Acorn-DFS-layout single-sided, "stl9a" | `7a6d3d0a6b7c957407a84b4e567bceaa91fd6de0c8ded1b4055d1bec02428189` | Solidisk DDFS utilities (19 files) |
+| `solidisk_utils_side_b.ssd.gz` | Acorn-DFS-layout single-sided, "stl9b" | `ef53506676a1077eeae50e33c9249b0fbfee6a2acf6b6b92514fe93f5793c8e3` | ADFS/DFS 2.1 system files |
+

@@ -79,7 +79,7 @@ Columns: **vendor** × **geometry** (SSD/DSD, 40/80 trk, sect/trk) × **catalogu
 | Acorn DFS SSD | Acorn | single-sided | `real` | `data/apd01_ssd.ssd.gz` (`dfs_reference_media_tests`) |
 | Acorn DFS DSD | Acorn | double-sided interleaved | `real` | `data/8bs0_dsd.dsd.gz` (`dfs_reference_media_tests`) |
 | Watford 62-file extension | Watford | SSD or DSD | `real (runtime)` | `BGAME1_A.BBC` (genuine 41-entry Watford disc) + synthetic regression for the total_sectors/image-size divergence bug |
-| Solidisk / Opus catalogue | Solidisk/Opus | — | `real (runtime)` | `Eagle_Empire.ssd` (single-density, recovered from a Solidisk DDFS original); true double-density DDFS is an unsupported variant |
+| Solidisk / Opus catalogue | Solidisk/Opus | — | `real` | `data/solidisk_utils_side_a.ssd.gz` (real Solidisk DDFS utilities disc) + synthetic/Eagle_Empire external; DDFS is a density enhancement, not a layout change |
 | HADFS (Harston) | HADFS | — | `real (runtime)` | mdfs.net `Software/HADFS/System.ssd` (unsupported variant; must not crash on DFS detection) |
 | dir-char / locked attributes on real media | any | — | `real` | `data/apd01_ssd.ssd.gz` (G/U dir chars) |
 | Catalogue bounds / broken entry | any | — | `synthetic` | `scenario_tests` |
