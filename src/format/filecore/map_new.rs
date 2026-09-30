@@ -388,4 +388,50 @@ mod tests {
         assert_eq!(real[0].start_unit, 0);
         assert_eq!(real[0].len_units, 10);
     }
+
+    #[test]
+    fn cross_zone_span_is_continued_and_joined() {
+        // A fragment whose terminator is never found before the end of zone 0
+        // must be carried into zone 1 by the `pending_span` logic (guide §3.1)
+        // rather than being dropped or left truncated at zone 0's edge. Zone 0
+        // has a 64-byte header (512 bits); zone >=1 has only a 4-byte header
+        // (32 bits). Build zone 0 with an id-3 fragment that runs to the very
+        // end with NO terminator (id bits, then zeros), so it is genuinely
+        // pending; zone 1 supplies a terminator.
+        let mut z0 = vec![0u8; 128];
+        z0[1..3].copy_from_slice(&0x8000u16.to_le_bytes()); // FreeLink: no free space
+        // id = 3 (idlen 4), LSB-first: bits at 512 and 513 set.
+        set_bit(&mut z0, 512, 1);
+        set_bit(&mut z0, 513, 1);
+        // bits 514..1023 remain zero: no terminator inside zone 0 -> pending.
+
+        let mut z1 = vec![0u8; 128];
+        z1[1..3].copy_from_slice(&0x8000u16.to_le_bytes());
+        // A single 1 bit at the start of zone 1's allocatable area terminates
+        // the continuing span almost immediately.
+        set_bit(&mut z1, 4 * 8, 1);
+
+        let dr = make_dr(7, 4, 7, 2, 8); // 2 zones, sector_size=128, zone_spare=8
+        let records = decode_all_zones(&[z0, z1], &dr);
+        let real: Vec<_> = records.iter().filter(|r| !r.is_free && r.id != 0).collect();
+        // The pending span from zone 0 must be joined with its zone-1 tail so
+        // the file is one logical fragment across the zone boundary, not two.
+        assert_eq!(
+            real.len(),
+            1,
+            "pending span must be joined, not split: {records:?}"
+        );
+        assert_eq!(real[0].id, 3);
+        assert_eq!(
+            real[0].zone, 0,
+            "joined fragment retains its originating zone"
+        );
+        // Zone 0's unterminated run alone would be (1024-512)=512 units; the
+        // continuation must add at least the zone-1 bytes that were consumed.
+        assert!(
+            real[0].len_units > 512,
+            "len_units must include the zone-1 continuation: {:?}",
+            real[0]
+        );
+    }
 }

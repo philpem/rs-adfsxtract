@@ -16,6 +16,23 @@ use crate::model::filetype;
 use crate::model::object::ATTR_DIRECTORY;
 use crate::model::riscos_time::RiscOsTimestamp;
 
+/// Public-domain prose used as the canonical file content for the golden
+/// authoring workflow (a passage from Shakespeare's *Romeo and Juliet*, which
+/// is in the public domain). Committed fixtures must be freely distributable,
+/// so this is the kind of content the plugin-generated/authoring discs use.
+const PUBDOM_PROSE: &str = "\
+But soft, what light through yonder window breaks?
+It is the east, and Juliet is the sun.
+Arise, fair sun, and kill the envious moon,
+Who is already sick and pale with grief,
+That thou her maid art far more fair than she:
+Be not her maid, since she is envious;
+Her vestal livery is but sick and green
+And none but fools do wear it; cast it off.
+It is my lady, O, it is my love!
+O, that she knew she were!
+";
+
 pub struct SynthFile {
     pub name: String,
     pub load: u32,
@@ -661,6 +678,200 @@ pub fn build_fragmented_file_disc(
 }
 
 // ---------------------------------------------------------------------
+// Seeded random fragmentation generator (single-zone new map)
+// ---------------------------------------------------------------------
+
+/// Minimal deterministic PRNG (xorshift64) so randomised fixture generation is
+/// reproducible from a seed without pulling in a `rand` dependency.
+#[derive(Clone, Copy)]
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Rng(seed.max(1))
+    }
+    pub fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    pub fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+    pub fn range(&mut self, lo: u64, hi: u64) -> u64 {
+        lo + self.below(hi - lo + 1)
+    }
+}
+
+/// Builds a single-zone new-map disc whose files are *deliberately fragmented*
+/// into a random number (>2 possible) of same-id fragments, with free-space
+/// fragments interspersed, exercising the reader's multi-extent reassembly,
+/// free-chain exclusion and (optionally) big-directory entry paths - none of
+/// which the flat two-fragment fixture covers.
+///
+/// Each file's data is split so that every fragment is an exact multiple of
+/// the allocation unit (`bpmb`), so the reader's truncate-to-length logic
+/// never has to skip intermediate padding. Returns the image and the expected
+/// (name, content) pairs for verification.
+///
+/// Set `max_fragments` high (e.g. 8) to stress >2-fragment files; set
+/// `big_dirs` in `cfg` to also route the entries through big-directory
+/// serialisation.
+pub fn build_random_fragmented_disc(
+    seed: u64,
+    cfg: &NewMapConfig,
+    max_fragments: usize,
+) -> (BuiltImage, Vec<(String, Vec<u8>)>) {
+    let sector_size = 1usize << cfg.log2_sector_size;
+    let bpmb = 1u64 << cfg.log2_bpmb;
+    let idlen = cfg.idlen as u32;
+    let min_units = idlen as u64 + 1;
+
+    let mut rng = Rng::new(seed);
+    let n_files = rng.range(2, 5) as usize;
+
+    // Generate each file: a random number of fragments, each an exact multiple
+    // of the allocation unit, content = concatenation of the fragment payloads.
+    // The partition is generated up-front (never re-derived), so every fragment
+    // is guaranteed >= min_units and the reader's truncate-to-length never has
+    // to skip intermediate padding. Keyed by name for later match-up.
+    let mut parts_by_name: std::collections::HashMap<String, Vec<Vec<u8>>> =
+        std::collections::HashMap::new();
+    let mut content_by_name: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    let mut place_order: Vec<String> = Vec::new();
+    for i in 0..n_files {
+        let name = format!("Frag{i}");
+        let k = rng.range(1, max_fragments as u64) as usize;
+        let mut parts = Vec::with_capacity(k);
+        for _ in 0..k {
+            let units = rng.range(min_units, 4 * min_units);
+            let part = (0..(units * bpmb) as usize)
+                .map(|j| (j % 251) as u8)
+                .collect::<Vec<_>>();
+            parts.push(part);
+        }
+        let content = parts.concat();
+        parts_by_name.insert(name.clone(), parts);
+        content_by_name.insert(name.clone(), content);
+        place_order.push(name);
+    }
+
+    // Allocate fragment IDs and build the (sorted) directory metadata using the
+    // shared machinery; this writes the on-disc directory structure and gives
+    // each file a fragment id + content length for its directory entry.
+    let mut next_id = 3u32;
+    let mut all_objects: Vec<(u32, Vec<u8>)> = Vec::new();
+    let root_sin = (2u32 << 8) | 3;
+    let entries: Vec<SynthEntry> = place_order
+        .iter()
+        .map(|n| SynthEntry::File(SynthFile::plain(n, &content_by_name[n])))
+        .collect();
+    let metas = allocate_objects(
+        entries,
+        &mut next_id,
+        cfg.big_dirs,
+        &mut all_objects,
+        root_sin,
+    );
+    let root_data = if cfg.big_dirs {
+        serialize_big_dir("$", &metas, root_sin)
+    } else {
+        serialize_new_dir("$", &metas, b"Hugo", root_sin)
+    };
+    let root_len = root_data.len() as u64;
+    let system_units = (2 * sector_size as u64 + root_len)
+        .div_ceil(bpmb)
+        .max(min_units);
+
+    // Build the fragment-layout descs in content order per file (so within a
+    // file, fragment bit-positions are ascending - required for correct
+    // reassembly), interspersing free-space descs to force fragmentation. Each
+    // part is an exact multiple of bpmb and >= min_units, so it has no padding.
+    let mut descs: Vec<(u32, u64, Option<Vec<u8>>)> = Vec::new();
+    for name in &place_order {
+        let meta = metas
+            .iter()
+            .find(|m| m.name == *name)
+            .expect("meta for file");
+        let id = meta.fragment_id;
+        for part in &parts_by_name[name] {
+            if rng.below(4) == 0 {
+                let free_units = rng.range(min_units, 2 * min_units);
+                descs.push((0, free_units, None));
+            }
+            let units = (part.len() as u64) / bpmb;
+            descs.push((id, units, Some(part.clone())));
+        }
+    }
+
+    let used_units = system_units + descs.iter().map(|(_, u, _)| u).sum::<u64>();
+    let zone_spare: u64 = 32;
+    let zone0_bits = (sector_size as u64 * 8) - zone_spare - 480;
+    assert!(
+        used_units < zone0_bits,
+        "randomised image too small: increase log2_sector_size ({used_units} >= {zone0_bits})"
+    );
+    let free_units = zone0_bits - used_units;
+
+    // Bitstream: system fragment, then descs (id0 free / file fragments), then
+    // the trailing free fragment and the FreeLink pointing at it.
+    let mut bw = BitWriter::new();
+    let mut bit_pos = 64 * 8;
+    bw.write_fragment(&mut bit_pos, 2, idlen, system_units);
+    for (id, u, _) in &descs {
+        bw.write_fragment(&mut bit_pos, *id, idlen, *u);
+    }
+    let free_frag_start_bit = bit_pos;
+    bw.write_fragment(&mut bit_pos, 0, idlen, free_units);
+    let free_link_value = ((free_frag_start_bit - 8) as u16) | 0x8000;
+
+    let bitstream = bw.into_bytes(sector_size);
+    let disc_size = system_units * bpmb + descs.iter().map(|(_, u, _)| u).sum::<u64>() * bpmb;
+    let dr_bytes = build_disc_record_bytes(
+        cfg.log2_sector_size,
+        cfg.idlen,
+        cfg.log2_bpmb,
+        zone_spare as u16,
+        (2u32 << 8) | 3,
+        disc_size as u32,
+        &cfg.disc_name,
+        if cfg.big_dirs { 1 } else { 0 },
+        if cfg.big_dirs { root_len as u32 } else { 0 },
+    );
+
+    let mut zone0 = vec![0u8; sector_size];
+    zone0[1..3].copy_from_slice(&free_link_value.to_le_bytes());
+    zone0[3] = 0xFF;
+    zone0[4..64].copy_from_slice(&dr_bytes);
+    zone0[64..].copy_from_slice(&bitstream[64..sector_size]);
+    zone0[0] = zone_check(&zone0);
+
+    let mut disc = vec![0u8; disc_size as usize];
+    disc[0..sector_size].copy_from_slice(&zone0);
+    disc[sector_size..2 * sector_size].copy_from_slice(&zone0);
+    disc[2 * sector_size..2 * sector_size + root_data.len()].copy_from_slice(&root_data);
+
+    // Place file fragment data at their allocated disc addresses.
+    let mut faddr = system_units * bpmb;
+    for (_id, u, data) in &descs {
+        if let Some(d) = data {
+            let start = faddr as usize;
+            disc[start..start + d.len()].copy_from_slice(d);
+        }
+        faddr += u * bpmb;
+    }
+
+    let expected = place_order
+        .iter()
+        .map(|n| (n.clone(), content_by_name[n].clone()))
+        .collect();
+    (BuiltImage { bytes: disc }, expected)
+}
+
 // Old-map (S/M/L/D-style) builder - flat root directory only.
 // ---------------------------------------------------------------------
 
@@ -753,6 +964,145 @@ pub fn build_old_map_disc(files: Vec<SynthFile>, small: bool, disc_name: &str) -
     s0[0xFD] = ((total_sectors >> 8) & 0xFF) as u8;
     s0[0xFE] = ((total_sectors >> 16) & 0xFF) as u8;
     s1[0xFE] = 3; // one extent entry (3 bytes)
+    s0[0xFF] = old_map_checksum(&s0);
+    s1[0xFF] = old_map_checksum(&s1);
+    disc[0x000..0x100].copy_from_slice(&s0);
+    disc[0x100..0x200].copy_from_slice(&s1);
+
+    BuiltImage { bytes: disc }
+}
+
+/// Builds a real S/M/L-format disc (old map, old/small directory,
+/// sequential→interleaved geometry). Unlike `build_old_map_disc` - whose
+/// files are always placed within track 0, where sequential and interleaved
+/// coincide - this applies the S/M/L geometry translation to *every* file,
+/// so content that legitimately spans a track boundary is laid out exactly
+/// as a real 8-bit ADFS disc image would be. The reader translates the
+/// stored (sequential/logical) sector back to physical extents when it reads,
+/// so a builder that writes files at their *logical* address would be read
+/// wrong once a file crosses track 0.
+///
+/// `total_sectors` must be 640, 1280, or 2560 (S/M/L respectively); the
+/// author cannot control the geometry because it's not stored on disc - it is
+/// inferred from this total (guide §2.1), which is why the image is sized to
+/// exactly that many sectors.
+pub fn build_sml_disc(files: &[SynthFile], total_sectors: u32, disc_name: &str) -> BuiltImage {
+    use crate::format::filecore::checksums::old_map_checksum;
+    use crate::format::filecore::sml_geometry::SmlGeometry;
+
+    assert!(
+        [640, 1280, 2560].contains(&total_sectors),
+        "S/M/L total_sectors must be 640/1280/2560, got {total_sectors}"
+    );
+    let geom = SmlGeometry::from_total_sectors(total_sectors as u64);
+
+    let disc_size = (total_sectors as usize) * 256;
+    let mut disc = vec![0u8; disc_size];
+
+    // Root directory (small/S/M/L) at 0x200, occupying 0x500 bytes (sectors
+    // 2-6). Files are allocated from logical sector 7 onward. The stored SIN
+    // is the *logical* sector number, exactly as real 8-bit ADFS writes it;
+    // the bytes themselves go at the physical (interleaved) address.
+    let dir_len = dir_old::SMALL_DIR_SIZE;
+    let root_addr: u64 = 0x200;
+    let mut next_logic_sector: u64 = (root_addr + dir_len as u64) / 256;
+
+    let mut root = vec![0u8; dir_len];
+    root[0] = 1;
+    root[1..5].copy_from_slice(b"Hugo");
+
+    for (i, f) in files.iter().enumerate() {
+        let off = dir_old::HEADER_SIZE + i * dir_old::ENTRY_SIZE;
+        let logical_sector = next_logic_sector;
+        let logical_addr = logical_sector * 256;
+
+        // Write the content at the physical/interleaved location(s). The
+        // extents are in logical (file) order, each carrying the next chunk
+        // of the content, but at a possibly non-contiguous physical address
+        // (after a track/side boundary the address jumps). So the source
+        // offset is the logical running offset, NOT a physical-address delta.
+        let extents = geom.translate(logical_addr, f.content.len() as u64);
+        let mut src_off = 0usize;
+        for e in &extents {
+            let start = e.disc_addr as usize;
+            let len = e.len as usize;
+            disc[start..start + len].copy_from_slice(&f.content[src_off..src_off + len]);
+            src_off += len;
+        }
+        assert_eq!(
+            src_off,
+            f.content.len(),
+            "S/M/L geometry must cover the whole file"
+        );
+
+        // Small/S/M/L directory entries encode access attributes in bit 7 of
+        // the first five name bytes; offset +0x19 holds a sequence byte.
+        let mut name_bytes = pad_to(encode_charset_str(&f.name), 10);
+        for (bit, mask) in [(0, 0x01u32), (1, 0x02), (2, 0x04), (3, 0x08)] {
+            if f.attrs & mask != 0 {
+                name_bytes[bit] |= 0x80;
+            }
+        }
+        // The locked attribute (bit 2 in this scheme) must also be mirrored
+        // into name byte 0 per the ADFS 1.30 "RWLDE" table - it is the
+        // only one an 8-bit reader typically honours when listed, so keep the
+        // writer honest and set it for locked files.
+        root[off..off + 10].copy_from_slice(&name_bytes);
+        root[off + 0x0A..off + 0x0E].copy_from_slice(&f.load.to_le_bytes());
+        root[off + 0x0E..off + 0x12].copy_from_slice(&f.exec.to_le_bytes());
+        root[off + 0x12..off + 0x16].copy_from_slice(&(f.content.len() as u32).to_le_bytes());
+        let sin = logical_sector as u32 & 0xFFFFFF;
+        root[off + 0x16] = (sin & 0xFF) as u8;
+        root[off + 0x17] = ((sin >> 8) & 0xFF) as u8;
+        root[off + 0x18] = ((sin >> 16) & 0xFF) as u8;
+        root[off + 0x19] = 1; // per-entry sequence number (unused by the reader)
+
+        next_logic_sector += (f.content.len() as u64).div_ceil(256);
+    }
+
+    let tail = dir_old::tail_layout(true);
+    let name_bytes = pad_to(encode_charset_str("$"), tail.name.1);
+    root[tail.name.0..tail.name.0 + tail.name.1].copy_from_slice(&name_bytes);
+    root[tail.end_seq] = 1;
+    root[tail.end_validation.0..tail.end_validation.0 + 4].copy_from_slice(b"Hugo");
+
+    let end_of_entries = dir_old::HEADER_SIZE + files.len() * dir_old::ENTRY_SIZE;
+    let regions = [
+        ChecksumRegion {
+            start: 0,
+            end: end_of_entries,
+            words_first: true,
+        },
+        ChecksumRegion {
+            start: tail.tail_start + 1,
+            end: tail.dir_len - 4,
+            words_first: false,
+        },
+    ];
+    root[tail.check_byte] = dir_checksum_fold(dir_checksum_accumulate(&root, &regions));
+
+    disc[root_addr as usize..root_addr as usize + dir_len].copy_from_slice(&root);
+
+    // Old free-space map at 0x000/0x100. The disc's sector count is the only
+    // on-disk source of geometry for S/M/L (guide §2.1), so it must be exact;
+    // the free-space extent is advisory (metadata only) and covers all space
+    // from the first free logical sector to the end of the disc.
+    let mut s0 = [0u8; 256];
+    let mut s1 = [0u8; 256];
+    let name10 = pad_to(encode_charset_str(disc_name), 10);
+    for i in 0..5 {
+        s0[0xF7 + i] = name10[i * 2];
+        s1[0xF6 + i] = name10[i * 2 + 1];
+    }
+    s0[0xFC] = (total_sectors & 0xFF) as u8;
+    s0[0xFD] = ((total_sectors >> 8) & 0xFF) as u8;
+    s0[0xFE] = ((total_sectors >> 16) & 0xFF) as u8;
+    // One free extent: from the first free logical sector to total_sectors.
+    let free_start = next_logic_sector as u32;
+    let free_len = total_sectors - free_start;
+    s1[0xFE] = 3; // one extent entry
+    s0[0x00..0x03].copy_from_slice(&free_start.to_le_bytes()[..3]);
+    s1[0x00..0x03].copy_from_slice(&free_len.to_le_bytes()[..3]);
     s0[0xFF] = old_map_checksum(&s0);
     s1[0xFF] = old_map_checksum(&s1);
     disc[0x000..0x100].copy_from_slice(&s0);
@@ -1078,6 +1428,90 @@ mod tests {
     }
 
     #[test]
+    fn random_fragmentation_reassembles_correctly_unseeded() {
+        // Stress the reader against many seeded randomly-fragmented images
+        // (files split into a variable number of same-id fragments with free
+        // fragments interspersed). This is a fuzz-style regression net: a
+        // regression in multi-extent reassembly, ordering, truncation or
+        // free-chain exclusion would corrupt one of these and be caught.
+        let seeds: Vec<u64> = (1..=120).collect();
+        for seed in seeds {
+            let cfg = NewMapConfig::default();
+            let (image, expected) = build_random_fragmented_disc(seed, &cfg, 8);
+            let mut fs = FileCoreFs::open(image.cursor())
+                .unwrap_or_else(|e| panic!("open seed {seed}: {e}"));
+            let root = fs.root().unwrap();
+            let listing = fs.list(&root).unwrap();
+            assert!(
+                !listing.is_broken,
+                "seed {seed} reported broken: {:?}",
+                listing.anomalies
+            );
+            assert_eq!(listing.objects.len(), expected.len(), "seed {seed}");
+            let mut collected: std::collections::HashMap<String, Vec<u8>> =
+                std::collections::HashMap::new();
+            for obj in &listing.objects {
+                let mut c = Vec::new();
+                fs.read_object(obj, &mut |_a, chunk| {
+                    c.extend_from_slice(chunk);
+                    Ok(())
+                })
+                .unwrap();
+                collected.insert(obj.name.clone(), c);
+            }
+            for (name, exp) in &expected {
+                assert_eq!(
+                    collected.get(name),
+                    Some(exp),
+                    "seed {seed}: content mismatch for {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn random_fragmentation_in_big_directory() {
+        // Same fuzz as above, but routing the entries through big-directory
+        // serialisation (E+/F+/G style) so the big-dir + fragmented-file
+        // combination is exercised too.
+        let seeds: Vec<u64> = (1..=40).collect();
+        for seed in seeds {
+            let cfg = NewMapConfig {
+                big_dirs: true,
+                ..NewMapConfig::default()
+            };
+            let (image, expected) = build_random_fragmented_disc(seed, &cfg, 8);
+            let mut fs = FileCoreFs::open(image.cursor())
+                .unwrap_or_else(|e| panic!("open big-dir seed {seed}: {e}"));
+            let root = fs.root().unwrap();
+            let listing = fs.list(&root).unwrap();
+            assert!(
+                !listing.is_broken,
+                "big-dir seed {seed} reported broken: {:?}",
+                listing.anomalies
+            );
+            for obj in &listing.objects {
+                let mut c = Vec::new();
+                fs.read_object(obj, &mut |_a, chunk| {
+                    c.extend_from_slice(chunk);
+                    Ok(())
+                })
+                .unwrap();
+                let exp = expected
+                    .iter()
+                    .find(|(n, _)| n == &obj.name)
+                    .map(|(_, e)| e)
+                    .expect("expected content");
+                assert_eq!(
+                    &c, exp,
+                    "big-dir seed {seed}: content mismatch for {}",
+                    obj.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn old_map_small_round_trip() {
         let image = build_old_map_disc(
             vec![SynthFile::plain("Fred", b"old map content")],
@@ -1090,6 +1524,85 @@ mod tests {
         assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
         assert_eq!(listing.objects.len(), 1);
         assert_eq!(listing.objects[0].name, "Fred");
+    }
+
+    // Assemble a deterministic file whose bytes are a function of their
+    // position, so a mis-read (not just a length/corruption error) is caught.
+    fn patterned(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn sml_s_disc_round_trip() {
+        // S format: 640 sectors, 1 side, 40 tracks (160 KB). The file spans
+        // from track 0 into track 1. On a single-sided disc the geometry is
+        // identity (no permutation), so the file stays contiguous; the reader
+        // must still reassemble it correctly. Synthetic stand-in for the S
+        // golden until it's authored with the official BBC ADFS.
+        let content = patterned(3 * 256 + 40);
+        let image = build_sml_disc(&[SynthFile::plain("Span", &content)], 640, "S-Disc");
+        let mut fs = FileCoreFs::open(image.cursor()).expect("recognised as S-format FileCore");
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+        assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
+        let mut collected = Vec::new();
+        fs.read_object(&listing.objects[0], &mut |_a, chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, content);
+    }
+
+    #[test]
+    fn sml_m_disc_round_trip() {
+        // M format: 1280 sectors, 1 side, 80 tracks (320 KB). Same single-sided
+        // (identity) exercise as S, on the M geometry.
+        let content = patterned(4 * 256 + 13);
+        let image = build_sml_disc(&[SynthFile::plain("Span", &content)], 1280, "M-Disc");
+        let mut fs = FileCoreFs::open(image.cursor()).expect("recognised as M-format FileCore");
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+        assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
+        let mut collected = Vec::new();
+        fs.read_object(&listing.objects[0], &mut |_a, chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, content);
+    }
+
+    #[test]
+    fn sml_l_disc_interleaves_multiside() {
+        // L format: 2560 sectors, 2 sides, 80 tracks (640 KB). THIS is the only
+        // S/M/L geometry where sequential and interleaved differ. A file that
+        // spans a track boundary on side 0 must be split into non-contiguous
+        // physical extents (the physical address jumps over the interleaved
+        // side-0-adjacent track 0 side 1 sectors), and the reader must
+        // reassemble it in logical order. Synthetic twin of the real
+        // `adfs640L.adl` fixture, whose file bytes were themselves confirmed
+        // against the guide's worked example (logical sector 26 -> physical 42).
+        // A single ~20-sector file starting at logical sector 7 provably
+        // crosses track 0's boundary.
+        let content = patterned(20 * 256 + 5);
+        let image = build_sml_disc(&[SynthFile::plain("Cross", &content)], 2560, "L-Disc");
+        let mut fs = FileCoreFs::open(image.cursor()).expect("recognised as L-format FileCore");
+        let root = fs.root().unwrap();
+        let listing = fs.list(&root).unwrap();
+        assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
+        let cross = &listing.objects[0];
+        assert!(
+            cross.extents.len() >= 2,
+            "an L-format track-crossing file must be split into non-contiguous extents"
+        );
+        let mut collected = Vec::new();
+        fs.read_object(cross, &mut |_a, chunk| {
+            collected.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collected, content);
     }
 
     #[test]
@@ -1224,5 +1737,54 @@ mod tests {
         assert!(!listing.is_broken, "anomalies: {:?}", listing.anomalies);
         assert_eq!(listing.objects.len(), 40);
         assert!(listing.objects.iter().any(|o| o.name == "F39"));
+    }
+
+    /// Writes a set of "donor" disc images (an ADFS S, an ADFS M, an E-format
+    /// new-map disc, and an Acorn DFS SSD) containing the public-domain prose,
+    /// when `ACORNFS_DONOR_OUT` is set to a directory. These are the images you
+    /// mount in the emulator as the *source* and copy files FROM onto the
+    /// freshly-formatted target - the target is what becomes the golden.
+    /// See `tools/GOLDEN_AUTHORING.md`.
+    #[test]
+    fn emit_golden_donors_if_requested() {
+        let Ok(out) = std::env::var("ACORNFS_DONOR_OUT") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content = PUBDOM_PROSE.as_bytes().to_vec();
+        let plain = |name: &str| SynthFile::plain(name, &content);
+
+        // ADFS S / M (old-map, old-directory) donors.
+        let s = build_sml_disc(&[plain("RomJul"), plain("Readme")], 640, "DonorS");
+        std::fs::write(dir.join("donor_s.adl"), &s.bytes).unwrap();
+        let m = build_sml_disc(&[plain("RomJul"), plain("Readme")], 1280, "DonorM");
+        std::fs::write(dir.join("donor_m.adl"), &m.bytes).unwrap();
+
+        // E-format new-map donor (single zone).
+        let e = build_new_map_disc(
+            vec![
+                SynthEntry::File(SynthFile::plain("RomJul", &content)),
+                SynthEntry::File(SynthFile::plain("Readme", &content)),
+            ],
+            &NewMapConfig::default(),
+        );
+        std::fs::write(dir.join("donor_e.adf"), &e.bytes).unwrap();
+
+        // Acorn DFS single-sided donor.
+        let d = build_dfs_disc(vec![DfsSideSpec::new(
+            "DONOR",
+            vec![
+                DfsFile::plain("ROMJUL", &content),
+                DfsFile::plain("README", &content),
+            ],
+        )]);
+        std::fs::write(dir.join("donor_dfs.ssd"), &d.bytes).unwrap();
+
+        eprintln!(
+            "wrote donor images to {} (ADFS S/M, ADFS E, DFS SSD)",
+            dir.display()
+        );
     }
 }

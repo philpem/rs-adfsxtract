@@ -47,10 +47,18 @@ cargo test
 ```
 
 The suite includes always-on regression tests against real disc images
-committed to `data/` (S/M/L, D, E and F format fixtures, all containing the
-same files - which lets the tests assert byte-identical extraction across
-formats and thereby validate the S/M/L sector-interleave translation). See
-`data/README.md` for provenance.
+committed to `data/` - the ADFS S/M/L, D, E and F format fixtures, plus two
+genuine Acorn DFS discs (`apd01_ssd` and `8bs0_dsd`). The ADFS fixtures all
+contain the same files, which lets the tests assert byte-identical extraction
+across formats and thereby validate the S/M/L sector-interleave translation.
+The DFS fixtures are the only non-synthetic ground truth for the DFS backend
+and cover single- and double-sided media plus a real `G`/`U`
+directory-character mix. See `data/README.md` for provenance.
+
+A **format-coverage matrix** (report-only) is printed by
+`src/format_coverage_tests.rs`; it documents which on-disk format cells are
+covered by real media versus synthetic-only versus uncovered, and is the
+authoritative statement of format breadth (see `docs/FORMAT_COVERAGE.md`).
 
 An optional stress harness pulls copyrighted corpus images at runtime only
 when an Arcology API key is set (it self-skips otherwise, so CI never needs
@@ -63,3 +71,13 @@ ACORNFS_ARCOLOGY_KEY=<key> cargo test stress_against_arcology_corpus
 Configurable via `ACORNFS_ARCOLOGY_API` (base URL), `ACORNFS_ARCOLOGY_MAX`
 (sample size), `ACORNFS_ARCOLOGY_EXT` (extensions to sample) and
 `ACORNFS_ARCOLOGY_MAXSIZE` (skip larger artefacts).
+
+An optional coverage tool (report-only, not a CI gate) is available:
+
+```sh
+cargo llvm-cov --summary-only --lib   # requires cargo-llvm-cov + llvm-tools-preview
+```
+
+Golden images (real media created with official Acorn tools) can be produced
+and validated by following `tools/GOLDEN_AUTHORING.md`; the donor images those
+steps need are emitted by `ACORNFS_DONOR_OUT=/path cargo test --lib emit_golden_donors_if_requested`.
