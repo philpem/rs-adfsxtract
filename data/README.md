@@ -26,3 +26,59 @@ that spans track 0 would read incorrectly without it.
 
 The disc images themselves are created with ADFS (RISC OS), not by any of
 these tools.
+
+## DFS fixtures
+
+Two genuine Acorn DFS discs, re-downloaded from **8bs.com** (The BBC and
+Master Computer Public Domain Library - freely-licensed / public-domain
+software; https://8bs.com/catalogue.htm and `/pool/...`). They are committed
+as the *only* non-synthetic ground truth for the DFS backend: the in-repo DFS
+builder shares its author with the reader, so a shared comprehension gap (the
+SSD/DSD interleave would be the obvious one) must not be able to pass a
+builder+reader round-trip. These provide real media for the SSD and DSD paths
+and a genuine `G`/`U` directory-character mix.
+
+| Fixture | Format | Raw image SHA-256 | Content |
+|---------|--------|-------------------|---------|
+| `apd01_ssd.ssd.gz` | Acorn DFS, single-sided, 800 sectors, "A_Programs 1" | `9cc46c78dbf71850afce98475352d86b5f41c7933a0b62d43a4a839d979981e2` | 30 files, incl. `!BOOT`, `G.JUNGLE`, `U.WORDPRO` |
+| `8bs0_dsd.dsd.gz` | Acorn DFS, double-sided, "8BS-00" | `bcc73394ad6ce071448af94d7b40e4b8cd319f0a284fd7b4f4cdafdcd6e361ce` | 8 files (side 0) + 17 files (side 1), incl. `Side0/!BOOT`, `Side1/ISSUES1` |
+
+The raw disc bytes are decompressed from `.gz` for the tests; the per-file
+CRC-32 and byte-length assertions in `src/dfs_reference_media_tests.rs` were
+derived from these exact images.
+
+## Solidisk fixtures
+
+Two genuine **Solidisk DDFS** discs, posted by Stephen Harris (**sweh**) to the
+Stardot archive-submissions thread
+(https://stardot.org.uk/forums/viewtopic.php?t=5011): side A is the Solidisk
+DDFS **utility set** (`FORMAT`, `DISCOPY`, `ARCHIVE`, `CATALL`, `PASSWD`,
+`PROTECT`, `RECOVER`, `RESTORE`, `SPECIFY`, `SDRVBAK`, `PARK`, ...), side B
+carries ADFS/DFS 2.1 system files. Solidisk DDFS is a density enhancement, not
+a layout change, so the catalogue layout is standard Acorn-DFS-compatible; the
+discs are single-density single-sided and provide real third-party media for
+the `dfs/solidisk` format cell.
+
+These are effectively the **driver/utilities disc that shipped with the action
+Solidisk hardware**, i.e. freely redistributable; the images are committed
+in-repo compressed, so a Stardot login is *not* required to reproduce the
+tests (the original `/tmp/stl9.zip` attachment is citable for provenance).
+
+Side A doubles as a detector regression: its single-sided file data lands at
+the interleaved side-1 catalogue offset, which previously caused the
+double-sided probe to report it as double-sided (inflating disc_size to 438272
+and inventing a phantom side 1). The detector now requires real evidence of a
+second side before trusting it. See `src/solidisk_reference_media_tests.rs`.
+
+> Known Solidisk-specific variants not yet covered by a fixture (noted from
+> sweh's MMB_Utils): 320 KB double-density discs record an 11-bit start sector
+> (bit stolen from the load high bits), and more-than-31-file Solidisk discs
+> use a *chained* catalogue rather than a fixed second block. Neither is
+> exercised by the committed 200 KB fixtures; the 11-bit disk-size field *is*
+> now decoded (see the three-high-bit fix and its regression test).
+
+| Fixture | Format | Raw image SHA-256 | Content |
+|---------|--------|-------------------|---------|
+| `solidisk_utils_side_a.ssd.gz` | Acorn-DFS-layout single-sided, "stl9a" | `7a6d3d0a6b7c957407a84b4e567bceaa91fd6de0c8ded1b4055d1bec02428189` | Solidisk DDFS utilities (19 files) |
+| `solidisk_utils_side_b.ssd.gz` | Acorn-DFS-layout single-sided, "stl9b" | `ef53506676a1077eeae50e33c9249b0fbfee6a2acf6b6b92514fe93f5793c8e3` | ADFS/DFS 2.1 system files |
+

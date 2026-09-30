@@ -47,6 +47,10 @@ pub struct DfsFs<S: SectorSource> {
     geometry: DfsGeometry,
     pub double_sided: bool,
     pub catalogues: Vec<DfsCatalogue>,
+    /// Actual byte length of the disc image. The catalogue's `total_sectors`
+    /// is unreliable on real media (e.g. Watford discs report a small value on
+    /// an 800-sector image), so file data runs are bounded by this instead.
+    pub(crate) image_len: u64,
 }
 
 fn leaf_name(e: &DfsEntry) -> String {
@@ -81,12 +85,14 @@ impl<S: SectorSource> DfsFs<S> {
         if detection.double_sided {
             catalogues.push(read_catalogue(&mut source, &geometry, 1)?);
         }
+        let image_len = source.total_len()?;
 
         Ok(Self {
             source,
             geometry,
             double_sided: detection.double_sided,
             catalogues,
+            image_len,
         })
     }
 
@@ -100,13 +106,18 @@ impl<S: SectorSource> DfsFs<S> {
         let mut anomalies = Vec::new();
 
         for e in &cat.entries {
-            if !e.in_bounds(cat.total_sectors) {
+            // Bound the file's data run by the *actual* image byte length, not
+            // the catalogue's declared total_sectors. Real media (notably
+            // Watford discs) record a total that is smaller than the physical
+            // image, so a valid file at a high sector must not be rejected.
+            let end = e.start_sector as u64 * SECTOR_SIZE as u64 + e.length;
+            if end > self.image_len {
                 anomalies.push(format!(
-                    "{}: start sector {} + length {:#x} exceeds disc size ({} sectors)",
+                    "{}: start sector {} + length {:#x} exceeds disc size ({} bytes)",
                     leaf_name(e),
                     e.start_sector,
                     e.length,
-                    cat.total_sectors
+                    self.image_len
                 ));
                 continue;
             }

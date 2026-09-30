@@ -601,22 +601,29 @@ fn dangerous_name_does_not_escape_output_directory() {
     )]);
     let mut fs = DfsFs::open(image.cursor()).unwrap();
     let dir = tempdir().unwrap();
-    let parent_before: Vec<_> =
-        std::fs::read_dir(dir.path().parent().expect("tempdir has a parent"))
+    // The output directory's parent is the shared system temp dir, which other
+    // parallel tests churn with their own tempdirs (directories). Count only
+    // *files* so the assertion is about what extraction might leak, not about
+    // unrelated concurrently-created sibling directories.
+    let count_files = |p: &Path| {
+        std::fs::read_dir(p)
             .unwrap()
-            .collect();
+            .filter(|e| {
+                e.as_ref()
+                    .map(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                    .unwrap_or(false)
+            })
+            .count()
+    };
+    let parent_before = count_files(dir.path().parent().expect("tempdir has a parent"));
     let mut log = ExtractionLog::default();
     walk_and_extract(&mut fs, &default_opts(dir.path()), &mut log).unwrap();
 
     // Nothing should have been written into the output directory's parent -
     // its listing must be unchanged (still just the tempdir itself).
-    let parent_after: Vec<_> =
-        std::fs::read_dir(dir.path().parent().expect("tempdir has a parent"))
-            .unwrap()
-            .collect();
+    let parent_after = count_files(dir.path().parent().expect("tempdir has a parent"));
     assert_eq!(
-        parent_before.len(),
-        parent_after.len(),
+        parent_before, parent_after,
         "extraction must not add anything outside --output"
     );
 
@@ -641,5 +648,47 @@ fn dangerous_name_does_not_escape_output_directory() {
         log.entries.iter().any(|e| matches!(e, crate::extract::log::LogEntry::Warning { message } if message.contains("unsafe"))),
         "expected a warning about the substituted name: {:?}",
         log.entries
+    );
+}
+
+#[test]
+fn newmap_sequential_track_order_refused() {
+    // New-map discs normally use interleaved track order; a disc with
+    // `DiscRecord_SequenceSides_Flag` (bit 6 of `low_sector`) set requests
+    // sequential ordering, which this backend deliberately refuses rather
+    // than mis-reading bytes (guide §1.1/§2.1). Detection must recognise the
+    // image as new-map and then reject it cleanly with `Unsupported` - not
+    // panic, not silently extract wrong data, and not misidentify it as
+    // something else.
+    use crate::error::FcError;
+
+    let cfg = NewMapConfig::default();
+    let mut image = build_new_map_disc(
+        vec![SynthEntry::File(SynthFile::plain("Seq", b"sequential"))],
+        &cfg,
+    );
+
+    // The disc record copy detection and open() read lives at byte 0x04; the
+    // low_sector field is at offset +0x08 within it. Set bit 6.
+    const LOW_SECTOR_ABS: usize = 0x04 + 0x08;
+    image.bytes[LOW_SECTOR_ABS] |= 0x40;
+    // Keep the zone-0 checksum consistent (zone_check is a folding XOR), or the
+    // still-plausible detection for the (unused, since refusal happens first)
+    // zone map would be left stale; not strictly required to reach the refusal
+    // but keeps the fixture internally valid.
+    let sector_size = 1usize << cfg.log2_sector_size;
+    for base in [0, sector_size] {
+        image.bytes[base] =
+            crate::format::filecore::checksums::zone_check(&image.bytes[base..base + sector_size]);
+    }
+
+    let result = FileCoreFs::open(image.cursor());
+    let err = match result {
+        Ok(_) => panic!("sequential-order new-map must be refused"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, FcError::Unsupported(_)),
+        "expected Unsupported, got {err:?}"
     );
 }

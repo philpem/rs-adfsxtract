@@ -8,7 +8,7 @@
 //! depends on that not happening.
 
 use crate::error::{FcError, Result};
-use crate::format::dfs::catalogue::{read_catalogue, read_sector};
+use crate::format::dfs::catalogue::{SECTOR_SIZE, read_catalogue, read_sector};
 use crate::format::dfs::geometry::DfsGeometry;
 use crate::io::SectorSource;
 
@@ -79,8 +79,41 @@ pub fn detect(source: &mut dyn SectorSource) -> Result<DfsDetection> {
     // there's real, sparse (e.g. short, zero-padded) file content sitting
     // there - which is otherwise indistinguishable from an empty catalogue
     // by the header check alone, so this is the deciding signal.
-    let side1_sector_count = (((s1_1[6] & 0x3) as u32) << 8) | s1_1[7] as u32;
-    let double_sided = plausible_header(&s1_0, &s1_1) && !side1_all_zero && side1_sector_count != 0;
+    let side1_sector_count = (((s1_1[6] & 0x7) as u32) << 8) | s1_1[7] as u32;
+    let header_plausible =
+        plausible_header(&s1_0, &s1_1) && !side1_all_zero && side1_sector_count != 0;
+    // The header check alone is still too weak: a single-sided image's file
+    // data sits at exactly the interleaved side-1 catalogue offset, and can
+    // coincidentally look like a plausible header + nonzero sector count (a
+    // real Solidisk DDFS utilities disc did this, and was wrongly reported as
+    // double-sided). A *genuine* side-1 catalogue's file data runs must fit
+    // within the physical image; coincidental bytes rarely all do. Require the
+    // side-1 catalogue entries to be majority in-bounds against the image size
+    // - the same majority test already used for side 0 - before trusting it.
+    let double_sided = if header_plausible {
+        let image_len = source.total_len()?;
+        let image_sectors = image_len / SECTOR_SIZE as u64;
+        // Two independent reality checks before trusting the alleged side 1:
+        // (1) a real formatted side records a sector count that the image
+        //     physically holds (coincidental file data will happily claim more
+        //     - the stl9a Solidisk disc's false side 1 reported 912 sectors on
+        //     an 800-sector image);
+        // (2) side-1 entries' data runs must fit within the image - the same
+        //     majority in-bounds test applied to side 0.
+        if side1_sector_count as u64 > image_sectors {
+            false
+        } else {
+            let cat1 = read_catalogue(source, &dsd, 1)?;
+            let bad = cat1
+                .entries
+                .iter()
+                .filter(|e| e.start_sector as u64 * SECTOR_SIZE as u64 + e.length > image_len)
+                .count();
+            bad * 2 <= cat1.entries.len()
+        }
+    } else {
+        false
+    };
 
     Ok(DfsDetection { double_sided })
 }

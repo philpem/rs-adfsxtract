@@ -159,4 +159,40 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn infers_s_and_m_geometries() {
+        // S = 640 sectors = 1 side, 40 tracks; M = 1280 sectors = 1 side, 80
+        // tracks. These geometry-parameter mappings are the parts of the
+        // S/M/L matrix never exercised by the real `adfs640L.adl` fixture
+        // (L = 2 sides, 80 tracks).
+        let s = SmlGeometry::from_total_sectors(640);
+        assert_eq!((s.tracks_per_side, s.heads), (40, 1));
+        let m = SmlGeometry::from_total_sectors(1280);
+        assert_eq!((m.tracks_per_side, m.heads), (80, 1));
+        let l = SmlGeometry::from_total_sectors(2560);
+        assert_eq!((l.tracks_per_side, l.heads), (80, 2));
+    }
+
+    #[test]
+    fn single_sided_s_is_identity_across_track_boundary() {
+        // On a single-sided disc (S/M) sequential and interleaved ordering
+        // coincide: there is only one side, so the interleave step is a
+        // no-op and a logically-contiguous file stays contiguous in the
+        // image (the per-track split is folded back by merge_adjacent). The
+        // trap this guards against is the opposite: a reader must NOT apply
+        // the multi-side permutation (which would copy bytes around) to S/M.
+        let s = SmlGeometry::from_total_sectors(640);
+        let start = 15 * 256; // last sector of track 0
+        let len = 4 * 256; // 3 sectors into track 1
+        let extents = s.translate(start, len);
+        assert_eq!(
+            extents,
+            vec![Extent {
+                disc_addr: 15 * 256,
+                len: 4 * 256
+            }],
+            "single-sided geometry must be identity (no permutation, merged contiguous)"
+        );
+    }
 }

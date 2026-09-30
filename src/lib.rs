@@ -24,3 +24,15 @@ mod reference_media_tests;
 
 #[cfg(test)]
 mod scenario_tests;
+
+#[cfg(test)]
+mod format_coverage_tests;
+
+#[cfg(test)]
+mod dfs_reference_media_tests;
+
+#[cfg(test)]
+mod solidisk_reference_media_tests;
+
+#[cfg(test)]
+mod external_real_media_tests;

@@ -176,6 +176,21 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
     let root = fs.root()?;
     let root_list = fs.list_with_parent(&root, root.sin)?;
 
+    // The catalogue's `total_sectors` is advisory and unreliable on real media
+    // (Watford discs record a smaller value than the physical image). Surface
+    // a non-fatal warning when it diverges from the image size, rather than
+    // silently accepting it - the divergence is why file bounds are checked
+    // against the image length instead of this value.
+    let declared_bytes = total_sectors * 256;
+    let mut directory_warnings = Vec::new();
+    if declared_bytes != fs.image_len {
+        directory_warnings.push(format!(
+            "catalogue total_sectors ({total_sectors} sectors / {declared_bytes} bytes) \
+             diverges from the image size ({} bytes)",
+            fs.image_len
+        ));
+    }
+
     Ok(DiscReport {
         filesystem: "DFS",
         map_type: "n/a",
@@ -197,7 +212,7 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
         cross_check_ok: None,
         root_check_byte_ok: !root_list.is_broken,
         broken_directories: Vec::new(),
-        directory_warnings: Vec::new(),
+        directory_warnings,
     })
 }
 

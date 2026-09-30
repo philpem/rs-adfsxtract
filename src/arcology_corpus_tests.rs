@@ -232,3 +232,136 @@ fn stress_against_arcology_corpus() {
         "arcology stress ran but found no disc-image artefacts"
     );
 }
+
+/// True if the filename names a *hard disc* image (as opposed to a floppy).
+/// Hard discs are where genuine new-map fragmentation - a single file split
+/// across several non-contiguous zone-map fragments - actually occurs, so this
+/// targets those rather than freshly-formatted floppies.
+fn is_hard_disc_image(filename: &str) -> Option<bool> {
+    let mut name = filename.to_ascii_lowercase();
+    let compressed = name.ends_with(".zst");
+    if compressed {
+        name = name[..name.len() - 4].to_string();
+    }
+    let ext = name.rsplit('.').next().unwrap_or("");
+    if ["dd", "img", "hdf"].contains(&ext) {
+        Some(compressed)
+    } else {
+        None
+    }
+}
+
+/// Opt-in real fragmentation coverage: pulls genuine RISC OS hard-disc images
+/// from the Arcology corpus and walks each one's directory tree, counting how
+/// many files are split into multiple extents. This exercises the new-map
+/// multi-fragment path on *real churned media* - something a freshly-formatted
+/// fixture never does - without pinning the artefact by name or hash: only the
+/// API key is needed, so nothing commits, and the count is reported, never
+/// relied upon as an exact value.
+#[test]
+fn hard_disc_fragmentation_against_arcology_corpus() {
+    use crate::format::fs::FileSystem;
+
+    let Ok(key) = std::env::var("ACORNFS_ARCOLOGY_KEY") else {
+        eprintln!("skipping: ACORNFS_ARCOLOGY_KEY not set");
+        return;
+    };
+    if key.trim().is_empty() {
+        eprintln!("skipping: ACORNFS_ARCOLOGY_KEY is empty");
+        return;
+    }
+    let base = std::env::var("ACORNFS_ARCOLOGY_API").unwrap_or_else(|_| DEFAULT_BASE.into());
+    let max = std::env::var("ACORNFS_ARCOLOGY_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
+    let max_size = std::env::var("ACORNFS_ARCOLOGY_MAXSIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAXSIZE);
+
+    let mut discs = 0usize;
+    let mut scattered_files = 0usize;
+    let mut fragmented_discs = 0usize;
+    let mut not_filecore = 0usize;
+    let mut too_big = 0usize;
+    let mut examples = Vec::new();
+
+    'outer: for page in 1.. {
+        let items: ItemsPage = api_get_json(
+            &base,
+            &key,
+            &format!("/items?page={page}&per_page={PAGE_SIZE}"),
+        )
+        .unwrap_or_else(|e| panic!("list items page {page}: {e}"));
+        for item in items.items {
+            let detail: ItemDetail = api_get_json(&base, &key, &format!("/items/{}", item.uuid))
+                .unwrap_or_else(|e| panic!("get item {}: {e}", item.uuid));
+            for art in detail.artefacts {
+                let Some(needs_decompress) = is_hard_disc_image(&art.original_filename) else {
+                    continue;
+                };
+                if art.is_restricted {
+                    continue;
+                }
+                if art.file_size > max_size {
+                    too_big += 1;
+                    continue;
+                }
+                let label = art.original_filename.clone();
+                let raw = api_get_bytes(&base, &key, &format!("/artefacts/{}/download", art.uuid))
+                    .unwrap_or_else(|e| panic!("download {label}: {e}"));
+                let data = if needs_decompress {
+                    zstd_decode(&raw, &label).unwrap_or_else(|e| panic!("{e}"))
+                } else {
+                    raw
+                };
+                discs += 1;
+
+                let Ok(mut fs) = FileCoreFs::open(Cursor::new(data)) else {
+                    not_filecore += 1;
+                    continue;
+                };
+                let root = fs.root().unwrap();
+                let mut stack = vec![root];
+                let mut total_files = 0usize;
+                let mut this_frag = 0usize;
+                while let Some(dir) = stack.pop() {
+                    let Ok(list) = fs.list(&dir) else { continue };
+                    for obj in list.objects {
+                        if obj.is_directory {
+                            stack.push(obj);
+                        } else {
+                            total_files += 1;
+                            if obj.extents.len() > 1 {
+                                this_frag += 1;
+                            }
+                        }
+                    }
+                }
+                if this_frag > 0 {
+                    fragmented_discs += 1;
+                    scattered_files += this_frag;
+                    examples.push(format!(
+                        "{label}: {this_frag} of {total_files} files fragmented"
+                    ));
+                }
+                if discs as u64 >= max {
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "arcology hard-disc fragmentation: discs={discs} not_filecore={not_filecore} too_big={too_big} \
+         fragmented_discs={fragmented_discs} scattered_files={scattered_files}"
+    );
+    for e in &examples {
+        eprintln!("  fragmented: {e}");
+    }
+    assert!(
+        discs > 0,
+        "arcology hard-disc test ran but found no hard-disc-image artefacts"
+    );
+}
