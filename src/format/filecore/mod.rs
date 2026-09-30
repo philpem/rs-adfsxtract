@@ -90,19 +90,26 @@ impl<S: SectorSource> FileCoreFs<S> {
                 } else {
                     dir_old::LARGE_DIR_SIZE
                 };
-                // Only S/M/L (old directories) need the sequential->
-                // interleaved geometry translation (sml_geometry.rs); D
-                // format (old map, new/large directories) already uses
-                // interleaved logical addressing.
+                // Only real S/M/L floppies (old directories) need the
+                // sequential->interleaved geometry translation
+                // (sml_geometry.rs); D format (old map, new/large directories)
+                // uses interleaved logical addressing, and an old-map *hard
+                // disc* (e.g. an ST506/Rodime Winchester) is addressed
+                // linearly - the floppy geometry does not apply. An S/M/L
+                // floppy is distinguished by its recorded total (640/1280/2560
+                // sectors); anything else is not a floppy.
                 let sml_geometry = if detection.dir_type == DirType::Old {
                     let mut s0 = [0u8; map_old::OLD_MAP_SECTOR_SIZE];
                     let mut s1 = [0u8; map_old::OLD_MAP_SECTOR_SIZE];
                     source.read_at(map_old::OLD_MAP_SECTOR0_ADDR, &mut s0)?;
                     source.read_at(map_old::OLD_MAP_SECTOR1_ADDR, &mut s1)?;
                     let free_map = map_old::parse_old_map(&s0, &s1)?;
-                    Some(SmlGeometry::from_total_sectors(
-                        free_map.total_sectors as u64,
-                    ))
+                    let total = free_map.total_sectors as u64;
+                    if matches!(total, 640 | 1280 | 2560) {
+                        Some(SmlGeometry::from_total_sectors(total))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -179,6 +186,13 @@ impl<S: SectorSource> FileCoreFs<S> {
 
     pub fn into_source(self) -> S {
         self.source
+    }
+
+    /// Total byte length of the underlying image. Used to report an old-map
+    /// hard disc's size, where the free-space map's `total_sectors` records a
+    /// chunk/cylinder count rather than the image size.
+    pub fn total_bytes(&mut self) -> std::io::Result<u64> {
+        self.source.total_len()
     }
 
     /// Reads the old free-space map (guide §2.5) for disc metadata; only

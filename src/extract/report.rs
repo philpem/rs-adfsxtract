@@ -46,10 +46,19 @@ pub fn build_report<S: SectorSource>(fs: &mut FileCoreFs<S>) -> Result<DiscRepor
     let (disc_name, disc_id, disc_size, sector_size, boot_option) = match map_type {
         MapType::Old => {
             let m = fs.old_free_space_map()?;
+            // S/M/L floppies record 640/1280/2560 total sectors; an old-map
+            // hard disc records a chunk/cylinder count that is NOT the image
+            // size, so for those report the actual image length.
+            let total = m.total_sectors as u64;
+            let disc_size = if matches!(total, 640 | 1280 | 2560) {
+                Some(total * 256)
+            } else {
+                Some(fs.total_bytes()?)
+            };
             (
                 Some(m.disc_name),
                 Some(m.disc_id as u32),
-                Some(m.total_sectors as u64 * 256),
+                disc_size,
                 None,
                 Some(m.boot_option),
             )

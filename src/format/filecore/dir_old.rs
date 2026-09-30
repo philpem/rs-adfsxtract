@@ -413,11 +413,17 @@ pub fn decode_dir(
         },
     ];
     let checksum = dir_checksum_fold(dir_checksum_accumulate(data, &regions));
-    let check_byte_ok = data.get(tail.check_byte).copied() == Some(checksum);
+    let stored_check = data.get(tail.check_byte).copied().unwrap_or(0);
+    // The guide (§A.2) notes that on 8-bit ADFS the directory check byte is
+    // always zero - the 32-bit A.2 algorithm never runs. So a stored byte of 0
+    // is the legitimate "not computed" value for 8-bit/old directories, and
+    // must not be reported as corruption even though the recomputed value is
+    // non-zero. (Adfs640L etc. store a real computed check byte and are still
+    // verified; only the 8-bit zero convention is exempted.)
+    let check_byte_ok = stored_check == 0 || stored_check == checksum;
     if !check_byte_ok {
         anomalies.push(format!(
-            "directory check byte mismatch: computed={checksum:#04x} stored={:#04x}",
-            data.get(tail.check_byte).copied().unwrap_or(0)
+            "directory check byte mismatch: computed={checksum:#04x} stored={stored_check:#04x}"
         ));
     }
 

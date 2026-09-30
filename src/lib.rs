@@ -35,4 +35,10 @@ mod dfs_reference_media_tests;
 mod solidisk_reference_media_tests;
 
 #[cfg(test)]
+mod oldmap_hard_disc_tests;
+
+#[cfg(test)]
+mod corpus_tests;
+
+#[cfg(test)]
 mod external_real_media_tests;

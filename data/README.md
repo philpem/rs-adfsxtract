@@ -82,3 +82,16 @@ second side before trusting it. See `src/solidisk_reference_media_tests.rs`.
 | `solidisk_utils_side_a.ssd.gz` | Acorn-DFS-layout single-sided, "stl9a" | `7a6d3d0a6b7c957407a84b4e567bceaa91fd6de0c8ded1b4055d1bec02428189` | Solidisk DDFS utilities (19 files) |
 | `solidisk_utils_side_b.ssd.gz` | Acorn-DFS-layout single-sided, "stl9b" | `ef53506676a1077eeae50e33c9249b0fbfee6a2acf6b6b92514fe93f5793c8e3` | ADFS/DFS 2.1 system files |
 
+## Note on old-map hard discs (no fixture committed)
+
+Old-map ADFS hard discs (e.g. an Acorn Winchester File Server drive, 256-byte
+sectors, old map, old directories) are NOT committed as a binary: instead they
+are covered by a **synthetic** always-on test (`src/oldmap_hard_disc_tests.rs`)
+built from public-domain content. Real-media validation of the same format is
+covered by the opt-in corpus scan (`ACORNFS_CORPUS_DIR`), which finds genuine
+old-map hard discs (e.g. the 1984 Rodime/Acorn Winchester drives) at runtime
+without committing them. This keeps the repo free of large/copyrighted images
+while still exercising the format: linear (non-S/M/L) addressing, `disc_size`
+from the image length (the old map's `total_sectors` is a chunk/cylinder count,
+not the image size), and the uncomputed (zero) 8-bit directory check byte.
+

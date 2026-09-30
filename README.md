@@ -83,6 +83,15 @@ given):
 ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
 ```
 
+A broader opt-in sweep against any local corpus of real disc images (e.g. an
+archive under `/mnt/nfs`) opens and verifies every recognisable Acorn disc and
+reports which format cells are actually exercised - no files are committed and
+no hash is pinned, so it is purely a real-media coverage/health check:
+
+```sh
+ACORNFS_CORPUS_DIR=/mnt/nfs cargo test --lib scan_corpus_for_format_coverage
+```
+
 An optional coverage tool (report-only, not a CI gate) is available:
 
 ```sh
