@@ -176,7 +176,10 @@ impl DiscRecord {
         self.big_flag = zone0.big_flag;
         self.format_version = zone0.format_version;
         self.root_size = zone0.root_size;
-        self.root_dir = zone0.root_dir;
+        // `root_dir` is geometry and is authoritative in the boot-block copy;
+        // the zone-0 map's disc-record copy can be zeroed/unreliable on some
+        // media (a disc whose zone map sits elsewhere), so do NOT overwrite it.
+        // (Previously this zeroed a valid root_dir and broke such discs.)
     }
 }
 
@@ -333,14 +336,23 @@ mod tests {
         zone0.disc_id = 0x1234;
         zone0.format_version = 1;
         zone0.root_size = 0x8000;
+        // The zone-0 copy may be unreliable for root_dir on some media (e.g. a
+        // partitioned disc whose zone map sits at an offset); the boot-block
+        // copy is authoritative, so a zeroed/other root_dir must be preserved.
+        let boot_root_dir = boot.root_dir;
+        zone0.root_dir = 0;
 
         boot.merge_zone0_metadata(&zone0);
 
         assert_eq!(boot.disc_id, 0x1234);
         assert!(boot.is_big_dir());
         assert_eq!(boot.root_size, 0x8000);
-        // Geometry is untouched by the merge.
+        // Geometry is untouched by the merge - including root_dir.
         assert_eq!(boot.sector_size(), 512);
         assert_eq!(boot.nzones(), 4);
+        assert_eq!(
+            boot.root_dir, boot_root_dir,
+            "root_dir must come from the boot-block copy"
+        );
     }
 }
