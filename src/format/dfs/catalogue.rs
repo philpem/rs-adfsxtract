@@ -137,7 +137,12 @@ pub fn read_catalogue(
     let file_count = (s1[5] / 8) as usize;
     let byte6 = s1[6];
     let boot_option = (byte6 >> 4) & 0x3;
-    let mut total_sectors = (((byte6 & 0x3) as u32) << 8) | s1[7] as u32;
+    // The disk-size field uses three high bits (bits 0-2) + the low byte, giving
+    // an 11-bit sector count (up to 0x7FF = 2047). Double-density DFS (e.g.
+    // Watford/Solidisk DDFS) discs - 320 KB (0x500 = 1280) and beyond - set bit
+    // 2, which a 2-bit mask would silently drop and mis-size. Confirmed against
+    // sweh's MMB_Utils (`$disk_size=($b[0]&7)*256+$b[1]`).
+    let mut total_sectors = (((byte6 & 0x7) as u32) << 8) | s1[7] as u32;
     if total_sectors == 0 {
         // DFS's own convention for an unrecorded disc size: assume 200K.
         total_sectors = 0x320;
@@ -261,6 +266,34 @@ mod tests {
         assert_eq!(cat.entries.len(), 1);
         assert_eq!(cat.entries[0].name, "!BOOT");
         assert!(!cat.watford);
+    }
+
+    #[test]
+    fn decodes_double_density_disk_size_using_three_high_bits() {
+        // Double-density DFS (Watford/Solidisk DDFS) records a sector count
+        // needing 11 bits, e.g. a 320 KB disc = 0x500 = 1280 sectors, whose
+        // high bits (5 = 0b101) set bit 2 of the size byte. A 2-bit mask would
+        // (incorrectly) read that as 0x100 = 256. The disk-size decode must use
+        // all three high bits (confirmed against sweh's MMB_Utils).
+        let mut s0 = [0u8; SECTOR_SIZE];
+        let mut s1 = [0u8; SECTOR_SIZE];
+        s0[0..8].copy_from_slice(b"DDDISK  ");
+        s1[0..4].copy_from_slice(b"\0\0\0\0");
+        // byte6: boot option 0 (bits 4-5) | disk-size high bits = 5 (bits 0-2)
+        s1[6] = 0x05;
+        s1[7] = 0x00; // low byte
+        let mut image = vec![0u8; SECTOR_SIZE * 4];
+        image[0..SECTOR_SIZE].copy_from_slice(&s0);
+        image[SECTOR_SIZE..SECTOR_SIZE * 2].copy_from_slice(&s1);
+        let mut cursor = std::io::Cursor::new(image);
+        let geometry = DfsGeometry {
+            double_sided: false,
+        };
+        let cat = read_catalogue(&mut cursor, &geometry, 0).unwrap();
+        assert_eq!(
+            cat.total_sectors, 0x500,
+            "1280 sectors (320 KB) must be read correctly"
+        );
     }
 
     #[test]

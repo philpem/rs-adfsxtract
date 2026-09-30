@@ -79,7 +79,7 @@ pub fn detect(source: &mut dyn SectorSource) -> Result<DfsDetection> {
     // there's real, sparse (e.g. short, zero-padded) file content sitting
     // there - which is otherwise indistinguishable from an empty catalogue
     // by the header check alone, so this is the deciding signal.
-    let side1_sector_count = (((s1_1[6] & 0x3) as u32) << 8) | s1_1[7] as u32;
+    let side1_sector_count = (((s1_1[6] & 0x7) as u32) << 8) | s1_1[7] as u32;
     let header_plausible =
         plausible_header(&s1_0, &s1_1) && !side1_all_zero && side1_sector_count != 0;
     // The header check alone is still too weak: a single-sided image's file
