@@ -22,7 +22,6 @@ enum Status {
     Real,
     Synthetic,
     SyntheticOnly,
-    Uncovered,
     Refused,
     /// Exercised against real media at runtime only (key-gated, never
     /// committed); no pinned hash/name is relied upon.
@@ -35,7 +34,6 @@ impl Status {
             Status::Real => "real",
             Status::Synthetic => "synthetic",
             Status::SyntheticOnly => "synthetic-only",
-            Status::Uncovered => "uncovered",
             Status::Refused => "refused",
             Status::RuntimeReal => "real (runtime)",
         }
@@ -107,9 +105,9 @@ fn filecore_matrix() -> Vec<Cell> {
         },
         Cell {
             id: "adfs/oldmap-hd",
-            status: Status::Uncovered,
-            fixture: None,
-            test: "detect/mod old-map hard-disc branch (golden TBD)",
+            status: Status::Real,
+            fixture: Some("winchester_adfs_rodime.gz"),
+            test: "oldmap_hard_disc_tests (real 1984 Acorn Winchester File Server disc; linear addressing, disc_size from image length, 8-bit zero check byte)",
         },
         Cell {
             id: "adfs/newmap-seq",
@@ -263,16 +261,14 @@ fn dfs_matrix() -> Vec<Cell> {
     ]
 }
 
-fn print_major(name: &str, cells: &[Cell]) -> (usize, usize, usize) {
+fn print_major(name: &str, cells: &[Cell]) -> (usize, usize) {
     let mut real = 0;
     let mut runtime = 0;
-    let mut uncovered = 0;
     println!("## {name}");
     for c in cells {
         match c.status {
             Status::Real => real += 1,
             Status::RuntimeReal => runtime += 1,
-            Status::Uncovered => uncovered += 1,
             _ => {}
         }
         let f = c.fixture.map(|f| format!(" [{f}]")).unwrap_or_default();
@@ -280,7 +276,7 @@ fn print_major(name: &str, cells: &[Cell]) -> (usize, usize, usize) {
         println!("        -> {}", c.test);
     }
     println!();
-    (real, runtime, uncovered)
+    (real, runtime)
 }
 
 #[test]
@@ -288,8 +284,8 @@ fn format_coverage_matrix_reports_and_is_internally_consistent() {
     // Assemble and print the full matrix (report-only).
     let filecore = filecore_matrix();
     let dfs = dfs_matrix();
-    let (fc_real, fc_runtime, fc_uncovered) = print_major("FileCore (ADFS)", &filecore);
-    let (dfs_real, dfs_runtime, dfs_uncovered) = print_major("DFS", &dfs);
+    let (fc_real, fc_runtime) = print_major("FileCore (ADFS)", &filecore);
+    let (dfs_real, dfs_runtime) = print_major("DFS", &dfs);
 
     // Invariant 1: cell identifiers are unique across both matrices.
     let mut seen = std::collections::HashSet::new();
@@ -319,9 +315,9 @@ fn format_coverage_matrix_reports_and_is_internally_consistent() {
         "real-media format coverage dropped to {real_total} (floor is 10)"
     );
 
-    // Summary line so CI visibly surfaces uncovered cells.
+    // Summary line so CI visibly surfaces coverage breadth (report-only).
     println!(
-        "COVERAGE SUMMARY: real={real_total} runtime_real={} uncovered_filecore={fc_uncovered} uncovered_dfs={dfs_uncovered}",
+        "COVERAGE SUMMARY: real={real_total} runtime_real={}",
         fc_runtime + dfs_runtime
     );
 }
