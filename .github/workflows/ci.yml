@@ -61,18 +61,27 @@ jobs:
           key: diff-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             diff-${{ runner.os }}-
+      # The differential feature/harness only exists once philpem/rs-adfsxtract#5
+      # lands; until then this job is skipped (green), and it becomes a real
+      # cross-validation once the feature is present.
       - name: Differential harness (report-only)
-        run: cargo test --features differential
+        run: |
+          if grep -q 'differential = \[' Cargo.toml; then
+            cargo test --features differential
+          else
+            echo "differential feature not present on this branch (PR #5 pending); skipping"
+          fi
 
-  # Real-media validation: downloads hash-pinned genuine discs (ADFS/DFS and
-  # Acorn File Server Level 2/3 hybrids) at runtime and verifies extraction.
-  # Requires network; self-skips (along with the rest of the suite) for CI
-  # runs that do not set the var, so its absence cannot break the gate job.
+  # Real-media validation against genuine discs (ADFS/DFS and Acorn File Server
+  # Level 2/3 hybrids). CI must not poll the forums/mirrors, so ACORNFS_CI=1
+  # disables the network fetch: cached discs (from actions/cache) are validated,
+  # and anything not cached is silently skipped with download instructions.
   real-media:
     name: validate real discs
     runs-on: ubuntu-latest
     env:
       ACORNFS_EXTERNAL_SOURCE: ${{ github.workspace }}/.afscache
+      ACORNFS_CI: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain

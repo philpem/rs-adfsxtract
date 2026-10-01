@@ -95,13 +95,22 @@ Configurable via `ACORNFS_ARCOLOGY_API` (base URL), `ACORNFS_ARCOLOGY_MAX`
 (sample size), `ACORNFS_ARCOLOGY_EXT` (extensions to sample) and
 `ACORNFS_ARCOLOGY_MAXSIZE` (skip larger artefacts).
 
-Separately, an opt-in target validates additional pinned real discs fetched
-from 8bs.com and mdfs.net (URL + SHA-256, self-skips unless a cache dir is
-given):
+Separately, opt-in targets validate additional pinned real discs (Acorn File
+Server Level 2/3 + hybrids, plus ADFS/DFS media from 8bs.com, mdfs.net,
+bbcmicro.co.uk and Stardot). Locally they fetch each disc from its source and
+cache it; the files are never bundled:
 
 ```sh
+# Local: fetches (or reads from the cache) and validates, with the SHA-256
+# checked against the pinned manifest.
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_real_afs_images
 ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
 ```
+
+`ACORNFS_EXTERNAL_SOURCE` is a directory used as the cache. The GitHub Actions
+workflow sets `ACORNFS_CI=1` so CI never polls these sources; it only
+validates whatever is already in the cache and prints download instructions
+(without failing) for anything absent, keeping a bare `cargo test` network-free.
 
 A broader opt-in sweep against any local corpus of real disc images (e.g. an
 archive under `/mnt/nfs`) opens and verifies every recognisable Acorn disc and
