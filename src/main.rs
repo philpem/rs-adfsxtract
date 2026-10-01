@@ -41,6 +41,7 @@ fn main() -> ExitCode {
             inf,
             log,
             dry_run,
+            partition,
             format,
         } => run_extract(
             &image,
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
             inf,
             log.as_deref(),
             dry_run,
+            partition.as_deref(),
             format,
         ),
         Command::Verify {
@@ -61,65 +63,137 @@ fn main() -> ExitCode {
     }
 }
 
-/// Either backend, opened and ready to walk. FileCore is tried first (its
-/// detection is signature-based and strict); AFS (signature-based via its
-/// `AFS0` block) is next; DFS - which has no magic number, only structural
-/// plausibility - is only ever tried as a final fallback once the others
-/// have ruled themselves out.
+/// One filesystem volume found on an image. Most discs contain a single
+/// volume; an ADFS/AFS hybrid contains two (an ADFS partition and a File
+/// Server partition), presented separately so they can be handled
+/// independently or extracted together into subdirectories.
+struct Volume {
+    label: String,
+    fs: AnyFs,
+}
+
+/// A single recognised filesystem backend.
 enum AnyFs {
     FileCore(Box<FileCoreFs<File>>),
     Afs(AfsFs<File>),
     Dfs(DfsFs<File>),
 }
 
-fn open_image(path: &Path) -> Result<AnyFs, FcError> {
-    let file = File::open(path).map_err(FcError::from)?;
-    match FileCoreFs::open(file) {
-        Ok(fs) => return Ok(AnyFs::FileCore(Box::new(fs))),
-        Err(FcError::NotRecognised) => {}
-        Err(e) => return Err(e),
+/// Opens every recognisable volume on an image. FileCore and AFS are both
+/// signature/structurally-based and are always attempted (an ADFS/AFS hybrid
+/// yields two volumes); DFS - which has no magic number, only structural
+/// plausibility - is only tried as a final fallback if neither of the others
+/// matched. Labels are made unique (a repeated filesystem type is suffixed).
+fn open_volumes(path: &Path) -> Result<Vec<Volume>, FcError> {
+    let mut volumes = Vec::new();
+    let mut hard_err: Option<FcError> = None;
+
+    if let Ok(file) = File::open(path) {
+        match FileCoreFs::open(file) {
+            Ok(fs) => push_volume(&mut volumes, "ADFS", AnyFs::FileCore(Box::new(fs))),
+            Err(FcError::NotRecognised) => {}
+            Err(e) => hard_err = Some(e),
+        }
     }
-    let file = File::open(path).map_err(FcError::from)?;
-    match AfsFs::open(file) {
-        Ok(fs) => return Ok(AnyFs::Afs(fs)),
-        Err(FcError::NotRecognised) => {}
-        Err(e) => return Err(e),
+
+    if let Ok(file) = File::open(path) {
+        match AfsFs::open(file) {
+            Ok(fs) => push_volume(&mut volumes, "AFS", AnyFs::Afs(fs)),
+            Err(FcError::NotRecognised) => {}
+            Err(e) => hard_err = Some(e),
+        }
     }
-    let file = File::open(path).map_err(FcError::from)?;
-    DfsFs::open(file).map(AnyFs::Dfs)
+
+    if volumes.is_empty()
+        && let Ok(file) = File::open(path)
+    {
+        match DfsFs::open(file) {
+            Ok(fs) => push_volume(&mut volumes, "DFS", AnyFs::Dfs(fs)),
+            Err(FcError::NotRecognised) => {}
+            Err(e) => hard_err = Some(e),
+        }
+    }
+
+    if volumes.is_empty() {
+        Err(hard_err.unwrap_or(FcError::NotRecognised))
+    } else {
+        Ok(volumes)
+    }
 }
 
-fn build_any_report(fs: &mut AnyFs) -> Result<DiscReport, FcError> {
-    match fs {
+fn push_volume(volumes: &mut Vec<Volume>, label: &str, fs: AnyFs) {
+    let mut name = label.to_string();
+    let mut n = 0;
+    while volumes.iter().any(|v| v.label == name) {
+        n += 1;
+        name = format!("{label}-{n}");
+    }
+    volumes.push(Volume { label: name, fs });
+}
+
+fn volume_report(v: &mut Volume) -> Result<DiscReport, FcError> {
+    match &mut v.fs {
         AnyFs::FileCore(fc) => build_report(fc.as_mut()),
         AnyFs::Afs(afs) => build_afs_report(afs),
         AnyFs::Dfs(dfs) => build_dfs_report(dfs),
     }
 }
 
-fn run_info(image: &Path, format: OutputFormat) -> ExitCode {
-    let mut fs = match open_image(image) {
-        Ok(fs) => fs,
+fn volume_verify(v: &mut Volume, diag: &mut Diagnostics) -> Result<VerifyReport, FcError> {
+    match &mut v.fs {
+        AnyFs::FileCore(fc) => {
+            verify_filecore_volume(&**fc, diag)?;
+            verify(&mut **fc, diag)
+        }
+        AnyFs::Afs(afs) => verify(afs, diag),
+        AnyFs::Dfs(dfs) => verify(&mut *dfs, diag),
+    }
+}
+
+fn volume_extract(
+    v: &mut Volume,
+    opts: &ExtractOptions,
+    log: &mut ExtractionLog,
+) -> Result<ExtractSummary, FcError> {
+    match &mut v.fs {
+        AnyFs::FileCore(fc) => walk_and_extract(fc.as_mut(), opts, log),
+        AnyFs::Afs(afs) => walk_and_extract(afs, opts, log),
+        AnyFs::Dfs(dfs) => walk_and_extract(dfs, opts, log),
+    }
+}
+
+fn open_or_exit(image: &Path, format: OutputFormat) -> Result<Vec<Volume>, ExitCode> {
+    match open_volumes(image) {
+        Ok(v) => Ok(v),
         Err(FcError::NotRecognised) => {
             print_not_recognised(format);
-            return ExitCode::from(EXIT_NOT_RECOGNISED);
+            Err(ExitCode::from(EXIT_NOT_RECOGNISED))
         }
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::from(EXIT_ERROR);
-        }
-    };
-
-    match build_any_report(&mut fs) {
-        Ok(report) => {
-            print_report(&report, format);
-            ExitCode::from(EXIT_OK)
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(EXIT_ERROR)
+            Err(ExitCode::from(EXIT_ERROR))
         }
     }
+}
+
+fn run_info(image: &Path, format: OutputFormat) -> ExitCode {
+    let mut volumes = match open_or_exit(image, format) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+
+    let mut reports = Vec::new();
+    for v in &mut volumes {
+        match volume_report(v) {
+            Ok(r) => reports.push((v.label.clone(), r)),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(EXIT_ERROR);
+            }
+        }
+    }
+    print_partition_reports(&reports, format);
+    ExitCode::from(EXIT_OK)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -132,27 +206,21 @@ fn run_extract(
     write_inf: bool,
     log_path: Option<&Path>,
     dry_run: bool,
+    partition: Option<&str>,
     format: OutputFormat,
 ) -> ExitCode {
-    let mut fs = match open_image(image) {
-        Ok(fs) => fs,
-        Err(FcError::NotRecognised) => {
-            print_not_recognised(format);
-            return ExitCode::from(EXIT_NOT_RECOGNISED);
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::from(EXIT_ERROR);
-        }
+    let mut volumes = match open_or_exit(image, format) {
+        Ok(v) => v,
+        Err(code) => return code,
     };
 
-    let report = match build_any_report(&mut fs) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
+    if let Some(p) = partition {
+        volumes.retain(|v| v.label == p);
+        if volumes.is_empty() {
+            eprintln!("partition '{p}' not found on this image");
             return ExitCode::from(EXIT_ERROR);
         }
-    };
+    }
 
     let rescue_map = match rescue_map_path {
         Some(p) => match std::fs::read_to_string(p)
@@ -168,21 +236,45 @@ fn run_extract(
         None => None,
     };
 
-    let opts = ExtractOptions {
-        output_dir: output.to_path_buf(),
-        write_inf,
-        dry_run,
-        broken_dir_policy,
-        bad_sector_policy,
-        rescue_map,
-    };
-
+    let multi = volumes.len() > 1;
+    let mut results = Vec::new();
+    let mut aggregate = ExtractSummary::default();
     let mut log = ExtractionLog::default();
-    let result = match &mut fs {
-        AnyFs::FileCore(fc) => walk_and_extract(fc.as_mut(), &opts, &mut log),
-        AnyFs::Afs(afs) => walk_and_extract(afs, &opts, &mut log),
-        AnyFs::Dfs(dfs) => walk_and_extract(dfs, &opts, &mut log),
-    };
+
+    for v in &mut volumes {
+        let dir = if multi {
+            output.join(&v.label)
+        } else {
+            output.to_path_buf()
+        };
+        let opts = ExtractOptions {
+            output_dir: dir,
+            write_inf,
+            dry_run,
+            broken_dir_policy,
+            bad_sector_policy,
+            rescue_map: rescue_map.clone(),
+        };
+        let report = match volume_report(v) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(EXIT_ERROR);
+            }
+        };
+        let summary = match volume_extract(v, &opts, &mut log) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(EXIT_ERROR);
+            }
+        };
+        aggregate.files_extracted += summary.files_extracted;
+        aggregate.files_skipped += summary.files_skipped;
+        aggregate.dirs_created += summary.dirs_created;
+        aggregate.total_bytes += summary.total_bytes;
+        results.push((v.label.clone(), report, summary));
+    }
 
     if let Some(p) = log_path
         && let Err(e) = log.write_to(p)
@@ -190,63 +282,35 @@ fn run_extract(
         eprintln!("warning: failed to write log to {}: {e}", p.display());
     }
 
-    match result {
-        Ok(summary) => {
-            print_extract_result(&report, &summary, format);
-            ExitCode::from(EXIT_OK)
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(EXIT_ERROR)
-        }
-    }
+    print_extract_results(&results, &aggregate, format);
+    ExitCode::from(EXIT_OK)
 }
 
 fn run_verify(image: &Path, format: OutputFormat, diagnostics_path: Option<&Path>) -> ExitCode {
-    let mut fs = match open_image(image) {
-        Ok(fs) => fs,
-        Err(FcError::NotRecognised) => {
-            print_not_recognised(format);
-            return ExitCode::from(EXIT_NOT_RECOGNISED);
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::from(EXIT_ERROR);
-        }
+    let mut volumes = match open_or_exit(image, format) {
+        Ok(v) => v,
+        Err(code) => return code,
     };
 
     let mut diag = Diagnostics::default();
-    let report = match &mut fs {
-        AnyFs::FileCore(fc) => {
-            if let Err(e) = verify_filecore_volume(&**fc, &mut diag) {
+    let mut aggregate = VerifyReport::default();
+    let mut per_volume = Vec::new();
+    for v in &mut volumes {
+        match volume_verify(v, &mut diag) {
+            Ok(r) => {
+                aggregate.directories += r.directories;
+                aggregate.files += r.files;
+                aggregate.unreadable += r.unreadable;
+                per_volume.push((v.label.clone(), r));
+            }
+            Err(e) => {
                 eprintln!("error: {e}");
                 return ExitCode::from(EXIT_ERROR);
-            }
-            match verify(&mut **fc, &mut diag) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(EXIT_ERROR);
-                }
             }
         }
-        AnyFs::Afs(afs) => match verify(afs, &mut diag) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(EXIT_ERROR);
-            }
-        },
-        AnyFs::Dfs(dfs) => match verify(&mut *dfs, &mut diag) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(EXIT_ERROR);
-            }
-        },
-    };
+    }
 
-    print_verify_report(&report, format);
+    print_verify_report(&aggregate, &per_volume, format);
 
     match diagnostics_path {
         Some(p) => {
@@ -267,20 +331,75 @@ fn run_verify(image: &Path, format: OutputFormat, diagnostics_path: Option<&Path
     ExitCode::from(EXIT_OK)
 }
 
-fn print_verify_report(report: &VerifyReport, format: OutputFormat) {
+#[derive(Serialize)]
+struct PartitionReport<'a> {
+    partition: &'a str,
+    #[serde(flatten)]
+    disc: &'a DiscReport,
+}
+
+fn print_partition_reports(reports: &[(String, DiscReport)], format: OutputFormat) {
     match format {
-        OutputFormat::Json => println!(
-            "{}",
-            serde_json::json!({
-                "directories": report.directories,
-                "files": report.files,
-                "unreadable": report.unreadable,
-            })
-        ),
-        OutputFormat::Text => println!(
-            "directories={} files={} unreadable={}",
-            report.directories, report.files, report.unreadable
-        ),
+        OutputFormat::Json => {
+            let v: Vec<PartitionReport> = reports
+                .iter()
+                .map(|(label, r)| PartitionReport {
+                    partition: label,
+                    disc: r,
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        }
+        OutputFormat::Text => {
+            for (i, (label, r)) in reports.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("Partition {label}:");
+                println!("{}", r.to_text());
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PartitionVerifyReport<'a> {
+    partition: &'a str,
+    directories: usize,
+    files: usize,
+    unreadable: usize,
+}
+
+fn print_verify_report(
+    aggregate: &VerifyReport,
+    per_volume: &[(String, VerifyReport)],
+    format: OutputFormat,
+) {
+    match format {
+        OutputFormat::Json => {
+            let v: Vec<PartitionVerifyReport> = per_volume
+                .iter()
+                .map(|(label, r)| PartitionVerifyReport {
+                    partition: label,
+                    directories: r.directories,
+                    files: r.files,
+                    unreadable: r.unreadable,
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
+        }
+        OutputFormat::Text => {
+            for (label, r) in per_volume {
+                println!(
+                    "partition {label}: directories={} files={} unreadable={}",
+                    r.directories, r.files, r.unreadable
+                );
+            }
+            println!(
+                "total: directories={} files={} unreadable={}",
+                aggregate.directories, aggregate.files, aggregate.unreadable
+            );
+        }
     }
 }
 
@@ -292,19 +411,16 @@ fn print_not_recognised(format: OutputFormat) {
                 serde_json::to_string_pretty(&NotRecognised { recognized: false }).unwrap()
             );
         }
-        OutputFormat::Text => println!("not a recognised disc image (FileCore or DFS)"),
-    }
-}
-
-fn print_report(report: &DiscReport, format: OutputFormat) {
-    match format {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(report).unwrap()),
-        OutputFormat::Text => println!("{}", report.to_text()),
+        OutputFormat::Text => {
+            println!("not a recognised disc image (FileCore, AFS or DFS)");
+        }
     }
 }
 
 #[derive(Serialize)]
-struct ExtractResult<'a> {
+struct PartitionExtractResult<'a> {
+    partition: &'a str,
+    #[serde(flatten)]
     disc: &'a DiscReport,
     files_extracted: u64,
     files_skipped: u64,
@@ -312,25 +428,49 @@ struct ExtractResult<'a> {
     total_bytes: u64,
 }
 
-fn print_extract_result(report: &DiscReport, summary: &ExtractSummary, format: OutputFormat) {
+fn print_extract_results(
+    results: &[(String, DiscReport, ExtractSummary)],
+    aggregate: &ExtractSummary,
+    format: OutputFormat,
+) {
     match format {
         OutputFormat::Json => {
-            let result = ExtractResult {
-                disc: report,
-                files_extracted: summary.files_extracted,
-                files_skipped: summary.files_skipped,
-                dirs_created: summary.dirs_created,
-                total_bytes: summary.total_bytes,
-            };
-            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            let v: Vec<PartitionExtractResult> = results
+                .iter()
+                .map(|(label, report, s)| PartitionExtractResult {
+                    partition: label,
+                    disc: report,
+                    files_extracted: s.files_extracted,
+                    files_skipped: s.files_skipped,
+                    dirs_created: s.dirs_created,
+                    total_bytes: s.total_bytes,
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
         OutputFormat::Text => {
-            println!("{}", report.to_text());
-            println!();
-            println!("Files extracted: {}", summary.files_extracted);
-            println!("Files skipped:   {}", summary.files_skipped);
-            println!("Dirs created:    {}", summary.dirs_created);
-            println!("Total bytes:     {}", summary.total_bytes);
+            for (i, (label, report, s)) in results.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("Partition {label}:");
+                println!("{}", report.to_text());
+                println!();
+                println!("Files extracted: {}", s.files_extracted);
+                println!("Files skipped:   {}", s.files_skipped);
+                println!("Dirs created:    {}", s.dirs_created);
+                println!("Total bytes:     {}", s.total_bytes);
+            }
+            if results.len() > 1 {
+                println!();
+                println!(
+                    "Total: {} files extracted, {} files skipped, {} dirs, {} bytes",
+                    aggregate.files_extracted,
+                    aggregate.files_skipped,
+                    aggregate.dirs_created,
+                    aggregate.total_bytes
+                );
+            }
         }
     }
 }

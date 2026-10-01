@@ -56,6 +56,10 @@ pub enum Command {
         /// List what would be extracted without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Extract only the named partition (a hybrid disc is ADFS + AFS);
+        /// otherwise every partition is extracted, each into a subdirectory.
+        #[arg(long)]
+        partition: Option<String>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },

@@ -35,10 +35,25 @@ acornfsextract extract <image> --output <dir> [options]
 | `--inf` | Write a `.inf` sidecar per extracted file |
 | `--log <path>` | Write an extraction log (bad sectors, skips, anomalies) |
 | `--dry-run` | List what would be extracted without writing |
+| `--partition <label>` | Extract only the named partition (see below) |
 | `--format text\|json` | Output format |
 
-FileCore is detected first; DFS is only tried as a fallback since it has no
-magic number.
+## Partitions
+
+An image may contain more than one filesystem volume. A **hybrid** disc is an
+ADFS filesystem that also carries an embedded Acorn File Server (AFS0)
+partition; such an image exposes two partitions, `ADFS` and `AFS`. The
+`info` and `verify` commands report every partition found. `extract`, when
+more than one partition is present, extracts each into a subdirectory named
+after that partition (e.g. `<dir>/ADFS/...` and `<dir>/AFS/...`). Use
+`--partition ADFS` (or `--partition AFS`) to extract a single partition
+directly into the output directory (the file layout then matches the
+single-volume case).
+
+FileCore and AFS are both signature/structurally-detected and always
+attempted; DFS - which has no magic number, only structural plausibility -
+is only tried as a final fallback.
+
 
 ## Tests
 
