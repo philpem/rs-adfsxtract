@@ -10,7 +10,6 @@ use crate::model::object::{
 
 pub const SECTOR_SIZE: usize = 256;
 const ENTRY_SIZE: usize = 0x1A;
-const ENTRY_START: usize = 0x11;
 
 /// The physical ordering of logical sectors on a floppy. "Seq" stores logical
 /// sector N at physical N; the interleaved orders (AFSFiler's INT/MUX) were
@@ -144,10 +143,15 @@ fn trim_spaces(b: &[u8]) -> &[u8] {
 }
 
 /// Decodes a directory buffer (assembled from the allocation-map data sectors,
-/// up to 26 sectors / &1A00 bytes). Entries are at the documented fixed
-/// offsets (&111 + n*&1A) per the mdfs AFS0 layout; the linked-list "next"
-/// pointers and the reserved parent entry (next=&FFFF) are treated as
-/// navigation metadata, with a parent entry (empty name) skipped.
+/// up to 26 sectors / &1A00 bytes).
+///
+/// Entries are not at fixed offsets: the directory header's pointer at &0
+/// gives the offset (into the buffer) of the first entry, and each entry's
+/// first field is a pointer to the next, forming a case-insensitively sorted
+/// linked list terminated by &0000 (a reserved parent entry has next=&FFFF
+/// and is skipped). Following that list rather than assuming a stride is
+/// essential - real FileServer discs place entries at arbitrary offsets (e.g.
+/// the first entry often sits far from &0x11).
 pub fn decode_directory(buf: &[u8]) -> DirDecode {
     let mut out = DirDecode::default();
     if buf.len() < 0x10 {
@@ -165,12 +169,24 @@ pub fn decode_directory(buf: &[u8]) -> DirDecode {
             .push(format!("implausible entry count {count}"));
         return out;
     }
-    for i in 0..count {
-        let off = ENTRY_START + i * ENTRY_SIZE;
+
+    let mut off = u16le(buf, 0x00) as usize;
+    // If the directory claims entries but the first-entry pointer is zero, the
+    // structure is inconsistent (and is how a mis-translated/mis-interleaved
+    // read is caught).
+    if count > 0 && off == 0 {
+        out.is_broken = true;
+        out.anomalies
+            .push("directory declares entries but has a zero first-entry pointer".into());
+        return out;
+    }
+
+    let mut seen = 0usize;
+    while off != 0 && seen <= count {
         if off + ENTRY_SIZE > buf.len() {
             out.is_broken = true;
             out.anomalies.push(format!(
-                "entry {i} at offset &{off:X} lies beyond directory data (&{:X})",
+                "entry at offset &{off:X} lies beyond directory data (&{:X})",
                 buf.len()
             ));
             break;
@@ -178,21 +194,25 @@ pub fn decode_directory(buf: &[u8]) -> DirDecode {
         let e = &buf[off..off + ENTRY_SIZE];
         let next = u16le(e, 0x00);
         let name_bytes = trim_spaces(&e[0x02..0x0C]).to_vec();
-        if name_bytes.is_empty() || next == 0xFFFF {
-            continue; // reserved parent / empty slot
+        if !name_bytes.is_empty() && next != 0xFFFF {
+            let nfs_access = e[0x14];
+            let attrs = convert_access(nfs_access);
+            out.entries.push(DirEntry {
+                name: crate::xlate::charset::decode(&name_bytes),
+                name_bytes,
+                load: u32le(e, 0x0C),
+                exec: u32le(e, 0x10),
+                attrs,
+                is_directory: attrs & ATTR_DIRECTORY != 0,
+                sin: u24le(e, 0x17),
+                modified_unix_secs: decode_afs_date(u16le(e, 0x15)),
+            });
         }
-        let nfs_access = e[0x14];
-        let attrs = convert_access(nfs_access);
-        out.entries.push(DirEntry {
-            name: crate::xlate::charset::decode(&name_bytes),
-            name_bytes,
-            load: u32le(e, 0x0C),
-            exec: u32le(e, 0x10),
-            attrs,
-            is_directory: attrs & ATTR_DIRECTORY != 0,
-            sin: u24le(e, 0x17),
-            modified_unix_secs: decode_afs_date(u16le(e, 0x15)),
-        });
+        if next == 0 || next == 0xFFFF {
+            break;
+        }
+        off = next as usize;
+        seen += 1;
     }
     out
 }
@@ -295,21 +315,42 @@ mod tests {
     }
 
     #[test]
-    fn directory_default_19_entries_layout() {
-        // Build a 2-sector directory with 19 entries as a documented layout.
-        let mut buf = vec![0u8; 0x200];
+    fn directory_follows_linked_list() {
+        // Build a directory using the real linked-list layout: the header's
+        // &0 pointer gives the first entry's offset, and each entry chains to
+        // the next via its &0 field, terminated by &0000. Entries are placed
+        // at 0x1E5 onwards (as real FileServer discs do), not at fixed &11.
+        let mut buf = vec![0u8; 0x400];
         buf[0x0F] = 19;
+        // First entry pointer (little-endian) at &0.
+        let first = 0x1E5usize;
+        let mut offsets = Vec::new();
         for i in 0..19 {
-            let off = ENTRY_START + i * ENTRY_SIZE;
-            buf[off] = 0; // next
+            let off = first + i * ENTRY_SIZE;
+            offsets.push(off);
             let name = format!("F{i:02}");
             buf[off + 2..off + 2 + name.len()].copy_from_slice(name.as_bytes());
             buf[off + 0x0C..off + 0x10].copy_from_slice(&1u32.to_le_bytes());
             buf[off + 0x14] = 0x0C; // owner WR
         }
+        for i in 0..19 {
+            let next = if i + 1 < 19 { offsets[i + 1] } else { 0 };
+            buf[offsets[i]..offsets[i] + 2].copy_from_slice(&(next as u16).to_le_bytes());
+        }
+        buf[0..2].copy_from_slice(&(first as u16).to_le_bytes());
+
         let dec = decode_directory(&buf);
         assert!(!dec.is_broken, "{:?}", dec.anomalies);
         assert_eq!(dec.entries.len(), 19);
         assert_eq!(dec.entries[0].name, "F00");
+        assert_eq!(dec.entries[18].name, "F18");
+    }
+
+    #[test]
+    fn directory_zero_first_pointer_with_entries_is_broken() {
+        let mut buf = vec![0u8; 0x400];
+        buf[0x0F] = 3; // entries declared but &0 pointer is zero
+        let dec = decode_directory(&buf);
+        assert!(dec.is_broken);
     }
 }

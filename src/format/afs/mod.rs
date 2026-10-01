@@ -228,10 +228,36 @@ impl<S: SectorSource> AfsFs<S> {
         })
     }
 
-    /// Reads and selects the current Level-2 allocation map into memory.
-    fn load_l2_map(&mut self) -> Result<()> {
-        self.l2_map = read_l2_map(&mut self.source, &self.info, self.spt, self.interleave)?;
-        Ok(())
+    /// Reclaims the underlying sector source after a failed detection attempt
+    /// so another interleave candidate can be tried with the same image.
+    pub fn into_source(self) -> S {
+        self.source
+    }
+
+    /// The interleave order selected by detection (or the SEQ fallback).
+    pub fn interleave(&self) -> Interleave {
+        self.interleave
+    }
+
+    /// Whether the filesystem opens to a structurally-plausible root
+    /// directory. Used by interleave auto-detection. A mis-translated
+    /// ordering reads the root allocation/sectors from the wrong physical
+    /// location, which yields an implausible decode. A plain zero sector
+    /// decodes as an "empty" directory (no name, no entries), which would be
+    /// indistinguishable from a genuine empty disc - so we additionally
+    /// require that the root carries a name or entries. This rejects the
+    /// zeroed read of a mis-interleaved disc while accepting a genuine
+    /// (named) empty directory.
+    fn valid_root(&mut self) -> bool {
+        let Ok(root) = self.root() else {
+            return false;
+        };
+        match self.list(&root) {
+            Ok(listing) => {
+                !listing.is_broken && (!listing.title.is_empty() || !listing.objects.is_empty())
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -317,45 +343,86 @@ pub fn open<SS: SectorSource>(mut source: SS) -> Result<AfsFs<SS>> {
         // Level 3 / hybrid: the info block is at the sector pointed to by the
         // ADFS free-space map's FileServer start pointer (`&0F6`).
         let start = u24le(&s0, 0x0F6);
-        for il in Interleave::all() {
-            let phys = read::translate(start, 16, il);
-            let mut b = [0u8; SECTOR_SIZE];
-            source.read_at(phys as u64 * SECTOR_SIZE as u64, &mut b)?;
-            if b[0..4] == AFS0_SIG {
-                let info = info::parse_level3(&b);
-                let spt = if info.sectors_per_track != 0 {
-                    info.sectors_per_track
-                } else {
-                    16
-                };
-                return Ok(AfsFs {
-                    source,
-                    info,
-                    interleave: il,
-                    spt,
-                    l2_map: Vec::new(),
-                });
-            }
-        }
-        Err(FcError::NotRecognised)
+        open_l3(source, start)
     }
 }
 
-/// Opens a Level 2 AFS filesystem. The interleave is SEQ by default (the
-/// common ordering in bitstream captures); INT/MUX translation is supported
-/// by `read::translate` but is not yet auto-detected here. A valid root
-/// directory listing is not required (blank discs have no entries), so the
-/// open succeeds on signature alone.
-fn open_l2<SS: SectorSource>(source: SS, info: DiskInfo) -> Result<AfsFs<SS>> {
-    let mut fs = AfsFs {
+/// Attempts to open a Level 2 filesystem under each candidate interleave,
+/// validating that the root directory decodes cleanly. SEQ is tried first
+/// (the common ordering in captured images); a genuine interleaved disc only
+/// validates under INT or MUX. Falls back to a best-effort SEQ open so a
+/// blank/edge-case disc is still recognised rather than rejected.
+fn open_l2<SS: SectorSource>(mut source: SS, info: DiskInfo) -> Result<AfsFs<SS>> {
+    for il in Interleave::all() {
+        let map = match read_l2_map(&mut source, &info, L2_SECTORS_PER_TRACK, il) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mut fs = AfsFs {
+            source,
+            info: info.clone(),
+            interleave: il,
+            spt: L2_SECTORS_PER_TRACK,
+            l2_map: map,
+        };
+        if fs.valid_root() {
+            return Ok(fs);
+        }
+        source = fs.into_source();
+    }
+    // Best-effort SEQ fallback.
+    let map =
+        read_l2_map(&mut source, &info, L2_SECTORS_PER_TRACK, Interleave::Seq).unwrap_or_default();
+    Ok(AfsFs {
         source,
         info,
         interleave: Interleave::Seq,
         spt: L2_SECTORS_PER_TRACK,
-        l2_map: Vec::new(),
-    };
-    fs.load_l2_map()?;
-    Ok(fs)
+        l2_map: map,
+    })
+}
+
+/// Attempts to open a Level 3 filesystem. The info block is located via the
+/// FileServer start pointer, but its position (and every data sector) depends
+/// on the interleave, so each candidate order is probed by looking for the
+/// `AFS0` signature there and then validating that the root directory walks
+/// cleanly. For a hybrid disc the pointer may point to an early track that is
+/// interleave-independent, but the root/data sectors are not - validation is
+/// therefore the authoritative check.
+fn open_l3<SS: SectorSource>(mut source: SS, start: u32) -> Result<AfsFs<SS>> {
+    for il in Interleave::all() {
+        for spt in [16u16, 10] {
+            let phys = read::translate(start, spt, il);
+            let mut b = [0u8; SECTOR_SIZE];
+            if source
+                .read_at(phys as u64 * SECTOR_SIZE as u64, &mut b)
+                .is_err()
+            {
+                continue;
+            }
+            if b[0..4] != AFS0_SIG {
+                continue;
+            }
+            let info = info::parse_level3(&b);
+            let real_spt = if info.sectors_per_track != 0 {
+                info.sectors_per_track
+            } else {
+                spt
+            };
+            let mut fs = AfsFs {
+                source,
+                info,
+                interleave: il,
+                spt: real_spt,
+                l2_map: Vec::new(),
+            };
+            if fs.valid_root() {
+                return Ok(fs);
+            }
+            source = fs.into_source();
+        }
+    }
+    Err(FcError::NotRecognised)
 }
 
 pub use info::AfsLevel;
@@ -385,10 +452,10 @@ mod tests {
         access: u8,
         mdate: u16,
         sin: u32,
+        next: u16,
     ) {
         let e = &mut dir[off..off + 0x1A];
-        e[0x00] = 0;
-        e[0x01] = 0;
+        e[0x00..0x02].copy_from_slice(&next.to_le_bytes());
         e[0x02..0x02 + name.len()].copy_from_slice(name.as_bytes());
         e[0x0C..0x10].copy_from_slice(&load.to_le_bytes());
         e[0x10..0x14].copy_from_slice(&exec.to_le_bytes());
@@ -429,8 +496,8 @@ mod tests {
         img[rd + 0x03..rd + 0x0D].fill(b' ');
         img[rd + 0x03] = b'$';
         img[rd + 0x0F] = 2;
-        write_entry(&mut img, rd + 0x11, "HELLO", 0, 0, 0x0C, 0x01_01, 4);
-        write_entry(&mut img, rd + 0x2B, "DATA", 0, 0, 0x0C, 0x01_01, 5);
+        write_entry(&mut img, rd + 0x11, "HELLO", 0, 0, 0x0C, 0x01_01, 4, 0x2B);
+        write_entry(&mut img, rd + 0x2B, "DATA", 0, 0, 0x0C, 0x01_01, 5, 0);
 
         // File data.
         img[TS * 4..TS * 4 + 13].copy_from_slice(b"Hello, world!");
@@ -499,7 +566,7 @@ mod tests {
         img[rd + 0x03..rd + 0x0D].fill(b' ');
         img[rd + 0x03] = b'$';
         img[rd + 0x0F] = 1;
-        write_entry(&mut img, rd + 0x11, "HELLO", 0, 0, 0x0C, 0x01_01, 7);
+        write_entry(&mut img, rd + 0x11, "HELLO", 0, 0, 0x0C, 0x01_01, 7, 0);
         // Sector 8: file data.
         img[TS * 8..TS * 8 + 13].copy_from_slice(b"Hello, world!");
         img
@@ -538,6 +605,100 @@ mod tests {
             std::fs::read(dir.path().join("HELLO")).unwrap(),
             b"Hello, world!"
         );
+    }
+
+    /// Builds a Level 2 image laid out under a *specific* interleave, with
+    /// deliberately-broken directory bytes placed at the physical locations
+    /// that the *other* candidate interleaves would read as the root
+    /// directory - so detection must select `target`.
+    fn build_l2_interleaved(target: Interleave) -> Vec<u8> {
+        const IMG_SECTORS: usize = 900;
+        let mut img = vec![0u8; TS * IMG_SECTORS];
+
+        fn place(img: &mut [u8], il: Interleave, logical: u32, data: &[u8]) {
+            let phys = read::translate(logical, 10, il) as usize;
+            img[phys * TS..phys * TS + data.len()].copy_from_slice(data);
+        }
+        fn bad_dir(img: &mut [u8], il: Interleave, logical: u32) {
+            let phys = read::translate(logical, 10, il) as usize;
+            let mut d = vec![0u8; TS];
+            d[0x0F] = 200; // implausible entry count -> decode is broken
+            img[phys * TS..phys * TS + TS].copy_from_slice(&d);
+        }
+
+        // Info block at logical 0 (root_sin=11, maps at 1/2).
+        let mut info = vec![0u8; TS];
+        info[0..4].copy_from_slice(b"AFS0");
+        info[4..0x14].copy_from_slice(b"INTDISC         ");
+        info[0x14] = 25; // sectors per side (50 total)
+        info[0x16] = 11; // root_sin
+        info[0x1B] = 1;
+        info[0x1E] = 2;
+        place(&mut img, target, 0, &info);
+
+        // Allocation map A at logical 1 (current), entries by logical sector.
+        let mut mapa = vec![0u8; TS];
+        mapa[0] = 1;
+        let put16 = |buf: &mut [u8], off: usize, v: u16| {
+            buf[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        };
+        put16(&mut mapa, 5 + 11 * 2, 0x4000); // root dir, last
+        put16(&mut mapa, 5 + 22 * 2, 0x4013); // file, last, 19 bytes
+        place(&mut img, target, 1, &mapa);
+        let mut mapb = vec![0u8; TS];
+        mapb[0] = 0;
+        place(&mut img, target, 2, &mapb);
+
+        // Root directory at logical 11.
+        let mut rd = vec![0u8; TS];
+        rd[0x00] = 0x11;
+        rd[0x02] = 0x11;
+        rd[0x03..0x0D].fill(b' ');
+        rd[0x03] = b'$';
+        rd[0x0F] = 1;
+        write_entry(&mut rd, 0x11, "HELLO", 0, 0, 0x0C, 0x01_01, 22, 0);
+        place(&mut img, target, 11, &rd);
+
+        // File data at logical 22.
+        let data = b"Hello, interleave!";
+        place(&mut img, target, 22, data);
+
+        // Break the root at every other candidate interleave's location.
+        for cand in Interleave::all() {
+            if cand == target {
+                continue;
+            }
+            bad_dir(&mut img, cand, 11);
+        }
+        img
+    }
+
+    #[test]
+    fn l2_detects_int_interleave() {
+        let mut fs = AfsFs::open(Cursor::new(build_l2_interleaved(Interleave::Int))).unwrap();
+        assert_eq!(fs.interleave(), Interleave::Int);
+        let root = fs.root().unwrap();
+        let list = fs.list(&root).unwrap();
+        assert!(!list.is_broken, "{:?}", list.anomalies);
+        assert_eq!(list.objects.len(), 1);
+        assert_eq!(list.objects[0].name, "HELLO");
+    }
+
+    #[test]
+    fn l2_detects_mux_interleave() {
+        let mut fs = AfsFs::open(Cursor::new(build_l2_interleaved(Interleave::Mux))).unwrap();
+        assert_eq!(fs.interleave(), Interleave::Mux);
+        let root = fs.root().unwrap();
+        let list = fs.list(&root).unwrap();
+        assert!(!list.is_broken, "{:?}", list.anomalies);
+        assert_eq!(list.objects.len(), 1);
+        assert_eq!(list.objects[0].name, "HELLO");
+    }
+
+    #[test]
+    fn l2_seq_fixture_stays_seq() {
+        let fs = AfsFs::open(Cursor::new(build_l2())).unwrap();
+        assert_eq!(fs.interleave(), Interleave::Seq);
     }
 
     #[test]
