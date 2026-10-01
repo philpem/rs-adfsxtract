@@ -494,13 +494,26 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
     }
 
     let zone_spare: u64 = 32;
-    let zone0_bits = (sector_size as u64 * 8) - zone_spare - 480;
     let used_units = system_units + placements.iter().map(|(_, _, u)| u).sum::<u64>();
+    // Leave a single minimal free fragment so the allocation map has a valid
+    // (if tiny) free-space tail, and size the disc so the map's bit-length
+    // equals the disc's mapped allocation-unit count. A strict, validating
+    // reader reads exactly `disc_size / bpmb` (after reserving the map
+    // sector(s)) allocation units, so if the map claimed more than that it
+    // would stop short of the free-fragment chain and reject the image. This
+    // reader never relied on the invariant, which is why the previous
+    // `zone0_bits` sizing went unnoticed; it also ensures every fragment spans
+    // whole sectors.
+    let num_zones: u64 = 1;
+    let free_units: u64 = min_units; // a fragment must be >= idlen+1 bits
+    let total_units = used_units + free_units;
+    let disc_size = (num_zones * sector_size as u64 + total_units * bpmb)
+        .div_ceil(sector_size as u64)
+        * sector_size as u64;
     assert!(
-        used_units < zone0_bits,
-        "synthetic image too small: increase log2_sector_size or reduce content ({used_units} >= {zone0_bits})"
+        (disc_size / bpmb) >= total_units,
+        "synthetic image too small: increase log2_sector_size or reduce content"
     );
-    let free_units = zone0_bits - used_units;
 
     let mut bw = BitWriter::new();
     let mut bit_pos = 64 * 8;
@@ -520,7 +533,7 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
         cfg.log2_bpmb,
         zone_spare as u16,
         (2u32 << 8) | 3, // root dir starts at byte 2*sector_size within fragment 2 -> sharing_offset=3
-        addr as u32,
+        disc_size as u32,
         &cfg.disc_name,
         if cfg.big_dirs { 1 } else { 0 },
         if cfg.big_dirs {
@@ -537,8 +550,7 @@ pub fn build_new_map_disc(root_children: Vec<SynthEntry>, cfg: &NewMapConfig) ->
     zone0[64..].copy_from_slice(&bitstream[64..sector_size]);
     zone0[0] = zone_check(&zone0);
 
-    let disc_size = addr as usize;
-    let mut disc = vec![0u8; disc_size];
+    let mut disc = vec![0u8; disc_size as usize];
     disc[0..sector_size].copy_from_slice(&zone0);
     disc[sector_size..2 * sector_size].copy_from_slice(&zone0);
     disc[2 * sector_size..2 * sector_size + root_data.len()].copy_from_slice(&root_data);
@@ -809,13 +821,22 @@ pub fn build_random_fragmented_disc(
     }
 
     let used_units = system_units + descs.iter().map(|(_, u, _)| u).sum::<u64>();
+    // See build_new_map_disc: size the disc so the allocation map's bit-length
+    // matches the disc's mapped allocation-unit count, and leave a single
+    // minimal free fragment. This keeps a strict validating reader from
+    // stopping short of the free-fragment chain or rejecting a fragment that
+    // does not span whole sectors.
     let zone_spare: u64 = 32;
-    let zone0_bits = (sector_size as u64 * 8) - zone_spare - 480;
+    let num_zones: u64 = 1;
+    let free_units: u64 = min_units;
+    let total_units = used_units + free_units;
+    let disc_size = (num_zones * sector_size as u64 + total_units * bpmb)
+        .div_ceil(sector_size as u64)
+        * sector_size as u64;
     assert!(
-        used_units < zone0_bits,
-        "randomised image too small: increase log2_sector_size ({used_units} >= {zone0_bits})"
+        (disc_size / bpmb) >= total_units,
+        "randomised image too small: increase log2_sector_size"
     );
-    let free_units = zone0_bits - used_units;
 
     // Bitstream: system fragment, then descs (id0 free / file fragments), then
     // the trailing free fragment and the FreeLink pointing at it.
@@ -830,7 +851,6 @@ pub fn build_random_fragmented_disc(
     let free_link_value = ((free_frag_start_bit - 8) as u16) | 0x8000;
 
     let bitstream = bw.into_bytes(sector_size);
-    let disc_size = system_units * bpmb + descs.iter().map(|(_, u, _)| u).sum::<u64>() * bpmb;
     let dr_bytes = build_disc_record_bytes(
         cfg.log2_sector_size,
         cfg.idlen,
