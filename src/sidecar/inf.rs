@@ -5,26 +5,25 @@
 //! `CreateINFFile` and what Arcology's `process_inf_sidecars` expects),
 //! not the DOSFS-translated host name.
 //!
-//! Percent-encoding operates on the UTF-8 bytes of the (already
-//! charset-decoded) name, since by this point the original RISC OS byte
-//! sequence is no longer available - DIM's own encoding operates on raw
-//! 8-bit RISC OS bytes instead, so this is not byte-for-byte identical to
-//! DIM's output, just format-compatible.
+//! Percent-encoding operates on the raw RISC OS name bytes (the pre-charset
+//! byte sequence), which matches DIM's `CreateINFFile`; the decoded UTF-8
+//! string is only used for host-filesystem naming, never for the `.inf`
+//! record, so high-bit (0x80-0xFF) filenames round-trip byte-for-byte.
 
-fn needs_quoting(name: &str) -> bool {
+fn needs_quoting(name: &[u8]) -> bool {
     name.is_empty()
-        || name.starts_with('"')
+        || name[0] == b'"'
         || name
-            .bytes()
-            .any(|b| !(0x21..=0x7E).contains(&b) || b == b'%' || b == b'"')
+            .iter()
+            .any(|&b| !(0x21..=0x7E).contains(&b) || b == b'%' || b == b'"')
 }
 
-pub fn encode_filename(name: &str) -> String {
+pub fn encode_filename(name: &[u8]) -> String {
     if !needs_quoting(name) {
-        return name.to_string();
+        return String::from_utf8_lossy(name).into_owned();
     }
     let mut out = String::from("\"");
-    for b in name.bytes() {
+    for &b in name {
         match b {
             b'%' => out.push_str("%25"),
             b'"' => out.push_str("%22"),
@@ -37,7 +36,7 @@ pub fn encode_filename(name: &str) -> String {
 }
 
 pub struct InfFields<'a> {
-    pub riscos_name: &'a str,
+    pub name_bytes: &'a [u8],
     pub load: u32,
     pub exec: u32,
     pub length: u64,
@@ -49,7 +48,7 @@ pub struct InfFields<'a> {
 pub fn build_inf_line(fields: &InfFields) -> String {
     let mut s = format!(
         "{} {:08x} {:08x} {:08x} {:02x}",
-        encode_filename(fields.riscos_name),
+        encode_filename(fields.name_bytes),
         fields.load,
         fields.exec,
         fields.length,
@@ -73,18 +72,31 @@ mod tests {
 
     #[test]
     fn simple_name_unquoted() {
-        assert_eq!(encode_filename("MyFile"), "MyFile");
+        assert_eq!(encode_filename(b"MyFile"), "MyFile");
     }
 
     #[test]
     fn name_with_space_quoted_and_encoded() {
-        assert_eq!(encode_filename("My File"), "\"My%20File\"");
+        assert_eq!(encode_filename(b"My File"), "\"My%20File\"");
+    }
+
+    #[test]
+    fn high_bit_bytes_encoded_per_raw_byte() {
+        // Byte 0xE9 (Latin-1 e-acute) is a single raw RISC OS byte; DIM
+        // encodes it as %E9, not as the multi-byte UTF-8 sequence of U+00E9.
+        // A decoded-UTF-8 encoder would emit "%C3%A9" instead - this must not.
+        assert_eq!(encode_filename(b"Caf\xE9"), "\"Caf%E9\"");
+    }
+
+    #[test]
+    fn printable_high_ascii_unquoted() {
+        assert_eq!(encode_filename(b"File~1"), "File~1");
     }
 
     #[test]
     fn build_line_bare_hex() {
         let fields = InfFields {
-            riscos_name: "File",
+            name_bytes: b"File",
             load: 0xFFF0_0FEB,
             exec: 0x1234_5678,
             length: 0x100,

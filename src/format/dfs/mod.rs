@@ -61,9 +61,27 @@ fn leaf_name(e: &DfsEntry) -> String {
     }
 }
 
+/// The leaf name as raw RISC OS bytes, mirroring [`leaf_name`] but on the
+/// raw byte sequences so the `.inf` sidecar can encode them exactly as DIM
+/// does. A `$`/space directory character omits the prefix (root), otherwise
+/// the directory-character byte is followed by a `.` and the name bytes.
+fn leaf_name_bytes(e: &DfsEntry) -> Vec<u8> {
+    if e.dir_char == '$' || e.dir_char == ' ' {
+        e.name_bytes.clone()
+    } else {
+        let mut v = Vec::with_capacity(e.name_bytes.len() + 2);
+        v.push(e.dir_char_byte);
+        v.push(b'.');
+        v.extend_from_slice(&e.name_bytes);
+        v
+    }
+}
+
 fn side_object(side: u8) -> Object {
+    let name = format!("Side{side}");
     Object {
-        name: format!("Side{side}"),
+        name: name.clone(),
+        name_bytes: name.into_bytes(),
         load: 0,
         exec: 0,
         length: 0,
@@ -125,6 +143,7 @@ impl<S: SectorSource> DfsFs<S> {
             let extents = self.geometry.translate(side, logical_addr, e.length);
             objects.push(Object {
                 name: leaf_name(e),
+                name_bytes: leaf_name_bytes(e),
                 load: e.load,
                 exec: e.exec,
                 length: e.length,
@@ -150,6 +169,7 @@ impl<S: SectorSource> FileSystem for DfsFs<S> {
     fn root(&mut self) -> Result<Object> {
         Ok(Object {
             name: "$".to_string(),
+            name_bytes: b"$".to_vec(),
             load: 0,
             exec: 0,
             length: 0,

@@ -47,7 +47,7 @@ pub struct DirDecodeResult {
     pub warnings: Vec<String>,
 }
 
-fn decode_name(raw: &[u8; 10], mask_top_bit: bool) -> (String, u32) {
+fn decode_name(raw: &[u8; 10], mask_top_bit: bool) -> (String, Vec<u8>, u32) {
     let mut attrs = 0u32;
     if mask_top_bit {
         if raw[0] & 0x80 != 0 {
@@ -74,7 +74,8 @@ fn decode_name(raw: &[u8; 10], mask_top_bit: bool) -> (String, u32) {
         .iter()
         .position(|&b| b == 0 || b == 0x0D)
         .unwrap_or(chars.len());
-    (crate::xlate::charset::decode(&chars[..end]), attrs)
+    let bytes = chars[..end].to_vec();
+    (crate::xlate::charset::decode(&bytes), bytes, attrs)
 }
 
 fn read_u24_le(b: &[u8]) -> u32 {
@@ -266,7 +267,7 @@ pub fn decode_dir(
         let off = HEADER_SIZE + i * ENTRY_SIZE;
         let entry = &data[off..off + ENTRY_SIZE];
         let name_raw: [u8; 10] = entry[0..10].try_into().unwrap();
-        let (name, name_attrs) = decode_name(&name_raw, small);
+        let (name, name_bytes, name_attrs) = decode_name(&name_raw, small);
         let load = u32::from_le_bytes(entry[0x0A..0x0E].try_into().unwrap());
         let exec = u32::from_le_bytes(entry[0x0E..0x12].try_into().unwrap());
         let length = u32::from_le_bytes(entry[0x12..0x16].try_into().unwrap()) as u64;
@@ -352,6 +353,7 @@ pub fn decode_dir(
 
         objects.push(Object {
             name,
+            name_bytes,
             load,
             exec,
             length,
@@ -483,8 +485,9 @@ mod tests {
         raw[2] = b'e' | 0x80; // L
         raw[3] = b'd'; // D clear
         raw[4] = b'\0';
-        let (name, attrs) = decode_name(&raw, true);
+        let (name, name_bytes, attrs) = decode_name(&raw, true);
         assert_eq!(name, "Fred");
+        assert_eq!(name_bytes, b"Fred");
         assert_eq!(attrs, ATTR_OWNER_READ | ATTR_OWNER_WRITE | ATTR_LOCKED);
     }
 

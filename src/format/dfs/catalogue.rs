@@ -24,7 +24,13 @@ const ENTRY_SIZE: usize = 8;
 #[derive(Debug, Clone)]
 pub struct DfsEntry {
     pub name: String,
+    /// Logical RISC OS name bytes (the raw on-disk name field, trailing
+    /// padding stripped), pre-`charset::decode`. Carried so the `.inf`
+    /// sidecar can encode the original byte sequence exactly as DIM does.
+    pub name_bytes: Vec<u8>,
     pub dir_char: char,
+    /// The directory-character raw byte (top (locked) bit masked off).
+    pub dir_char_byte: u8,
     pub locked: bool,
     pub load: u32,
     pub exec: u32,
@@ -65,7 +71,13 @@ fn decode_entries(names: &[u8], info: &[u8], count: usize) -> Vec<DfsEntry> {
         let n = &names[i * ENTRY_SIZE..i * ENTRY_SIZE + ENTRY_SIZE];
         let raw_dir = n[7];
         let locked = raw_dir & 0x80 != 0;
-        let dir_char = charset::decode_byte(raw_dir & 0x7F);
+        let dir_char_byte = raw_dir & 0x7F;
+        let dir_char = charset::decode_byte(dir_char_byte);
+        let name_bytes = n[0..7]
+            .iter()
+            .copied()
+            .take_while(|&b| b != 0 && b != b' ')
+            .collect();
         let name = charset::decode(&n[0..7])
             .trim_end_matches(['\0', ' '])
             .to_string();
@@ -84,7 +96,9 @@ fn decode_entries(names: &[u8], info: &[u8], count: usize) -> Vec<DfsEntry> {
 
         out.push(DfsEntry {
             name,
+            name_bytes,
             dir_char,
+            dir_char_byte,
             locked,
             load: (load_hi << 16) | load_lo,
             exec: (exec_hi << 16) | exec_lo,
@@ -327,7 +341,9 @@ mod tests {
     fn bounds_check_catches_out_of_range_entry() {
         let e = DfsEntry {
             name: "X".into(),
+            name_bytes: b"X".to_vec(),
             dir_char: '$',
+            dir_char_byte: b'$',
             locked: false,
             load: 0,
             exec: 0,
