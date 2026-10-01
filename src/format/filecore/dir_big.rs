@@ -194,6 +194,7 @@ pub fn decode_big_dir(
                 is_directory,
                 extents,
                 sin: Some(sin_raw),
+                modified_unix_secs: None,
             });
         }
     } else {

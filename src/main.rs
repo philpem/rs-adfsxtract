@@ -9,8 +9,11 @@ use acornfsextract::cli::{Cli, Command, OutputFormat};
 use acornfsextract::diagnostics::Diagnostics;
 use acornfsextract::error::FcError;
 use acornfsextract::extract::log::ExtractionLog;
-use acornfsextract::extract::report::{DiscReport, build_dfs_report, build_report};
+use acornfsextract::extract::report::{
+    DiscReport, build_afs_report, build_dfs_report, build_report,
+};
 use acornfsextract::extract::walker::{ExtractOptions, ExtractSummary, walk_and_extract};
+use acornfsextract::format::afs::AfsFs;
 use acornfsextract::format::dfs::DfsFs;
 use acornfsextract::format::filecore::FileCoreFs;
 use acornfsextract::io::rescue::RescueMap;
@@ -59,11 +62,13 @@ fn main() -> ExitCode {
 }
 
 /// Either backend, opened and ready to walk. FileCore is tried first (its
-/// detection is signature-based and strict); DFS - which has no magic
-/// number, only structural plausibility - is only ever tried as a fallback
-/// once FileCore has ruled itself out.
+/// detection is signature-based and strict); AFS (signature-based via its
+/// `AFS0` block) is next; DFS - which has no magic number, only structural
+/// plausibility - is only ever tried as a final fallback once the others
+/// have ruled themselves out.
 enum AnyFs {
     FileCore(Box<FileCoreFs<File>>),
+    Afs(AfsFs<File>),
     Dfs(DfsFs<File>),
 }
 
@@ -75,12 +80,19 @@ fn open_image(path: &Path) -> Result<AnyFs, FcError> {
         Err(e) => return Err(e),
     }
     let file = File::open(path).map_err(FcError::from)?;
+    match AfsFs::open(file) {
+        Ok(fs) => return Ok(AnyFs::Afs(fs)),
+        Err(FcError::NotRecognised) => {}
+        Err(e) => return Err(e),
+    }
+    let file = File::open(path).map_err(FcError::from)?;
     DfsFs::open(file).map(AnyFs::Dfs)
 }
 
 fn build_any_report(fs: &mut AnyFs) -> Result<DiscReport, FcError> {
     match fs {
         AnyFs::FileCore(fc) => build_report(fc.as_mut()),
+        AnyFs::Afs(afs) => build_afs_report(afs),
         AnyFs::Dfs(dfs) => build_dfs_report(dfs),
     }
 }
@@ -168,6 +180,7 @@ fn run_extract(
     let mut log = ExtractionLog::default();
     let result = match &mut fs {
         AnyFs::FileCore(fc) => walk_and_extract(fc.as_mut(), &opts, &mut log),
+        AnyFs::Afs(afs) => walk_and_extract(afs, &opts, &mut log),
         AnyFs::Dfs(dfs) => walk_and_extract(dfs, &opts, &mut log),
     };
 
@@ -217,6 +230,13 @@ fn run_verify(image: &Path, format: OutputFormat, diagnostics_path: Option<&Path
                 }
             }
         }
+        AnyFs::Afs(afs) => match verify(afs, &mut diag) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(EXIT_ERROR);
+            }
+        },
         AnyFs::Dfs(dfs) => match verify(&mut *dfs, &mut diag) {
             Ok(r) => r,
             Err(e) => {
