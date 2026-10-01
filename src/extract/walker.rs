@@ -263,14 +263,13 @@ fn extract_file<FS: FileSystem>(
 
     drop(out);
 
-    if let Some(ts) = obj.load_exec().timestamp {
-        let ft = filetime::FileTime::from_unix_time(ts.unix_secs, ts.nanos);
+    if let Some(secs) = obj.modified_secs() {
+        let ft = filetime::FileTime::from_unix_time(secs, 0);
         let _ = filetime::set_file_mtime(host_path, ft);
     }
 
     if opts.write_inf {
         let crc = hasher.finalize();
-        let le = obj.load_exec();
         let fields = InfFields {
             name_bytes: &obj.name_bytes,
             load: obj.load,
@@ -278,7 +277,7 @@ fn extract_file<FS: FileSystem>(
             length: written,
             attrs: obj.attrs,
             crc32: Some(crc),
-            datetime_unix_secs: le.timestamp.map(|t| t.unix_secs),
+            datetime_unix_secs: obj.modified_secs(),
         };
         let inf_path = PathBuf::from(format!("{}.inf", host_path.display()));
         let mut inf_file = File::create(&inf_path)?;

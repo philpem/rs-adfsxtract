@@ -361,6 +361,7 @@ pub fn decode_dir(
             is_directory,
             extents,
             sin: (map_type == MapType::New).then_some(sin_raw),
+            modified_unix_secs: None,
         });
 
         // Raw name bytes for collation (the logical name, so S/M/L top bits

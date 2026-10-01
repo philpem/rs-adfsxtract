@@ -46,6 +46,13 @@ pub struct Object {
     /// `NewDirParent` must equal its *containing* directory's SIN, so the
     /// walker passes the containing directory's `sin` down when it recurses.
     pub sin: Option<u32>,
+    /// Modification time in Unix seconds, when the source filesystem stores a
+    /// date separately from the load/exec pair (AFS FileServer, which keeps
+    /// legacy load/exec addresses plus a separate filing-system date). AFS is
+    /// the only backend that sets this; FileCore/DFS date-stamp their load
+    /// field instead, so for those this stays `None` and the walker falls back
+    /// to the timestamp decoded from `load`/`exec`.
+    pub modified_unix_secs: Option<i64>,
 }
 
 impl Object {
@@ -55,6 +62,15 @@ impl Object {
 
     pub fn is_locked(&self) -> bool {
         self.attrs & ATTR_LOCKED != 0
+    }
+
+    /// The object's modification time in Unix seconds: the explicit source
+    /// date when one is stored separately (AFS), otherwise the timestamp
+    /// decoded from the date-stamped load/exec pair (FileCore) or none (DFS,
+    /// plain load/exec).
+    pub fn modified_secs(&self) -> Option<i64> {
+        self.modified_unix_secs
+            .or_else(|| self.load_exec().timestamp.map(|t| t.unix_secs))
     }
 
     pub fn total_extent_len(&self) -> u64 {

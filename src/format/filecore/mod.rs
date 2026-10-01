@@ -229,6 +229,7 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
             is_directory: true,
             extents: self.root_extents.clone(),
             sin,
+            modified_unix_secs: None,
         })
     }
 

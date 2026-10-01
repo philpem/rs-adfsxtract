@@ -89,6 +89,7 @@ fn side_object(side: u8) -> Object {
         is_directory: true,
         extents: vec![],
         sin: None,
+        modified_unix_secs: None,
     }
 }
 
@@ -151,6 +152,7 @@ impl<S: SectorSource> DfsFs<S> {
                 is_directory: false,
                 extents,
                 sin: None,
+                modified_unix_secs: None,
             });
         }
 
@@ -177,6 +179,7 @@ impl<S: SectorSource> FileSystem for DfsFs<S> {
             is_directory: true,
             extents: vec![],
             sin: None,
+            modified_unix_secs: None,
         })
     }
 

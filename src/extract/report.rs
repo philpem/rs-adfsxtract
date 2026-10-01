@@ -6,6 +6,8 @@
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::format::afs::AfsFs;
+use crate::format::afs::info::AfsLevel;
 use crate::format::dfs::DfsFs;
 use crate::format::filecore::{DirType, FileCoreFs, MapType};
 use crate::format::fs::FileSystem;
@@ -241,6 +243,90 @@ pub fn build_dfs_report<S: SectorSource>(fs: &mut DfsFs<S>) -> Result<DiscReport
         broken_directories: Vec::new(),
         directory_warnings,
     })
+}
+
+/// AFS FileServer metadata. There is no FileCore/ADFS-style disc record or
+/// zone map, so the volume-level fields are absent; the directory-tree health
+/// walk still reports any structurally-broken directories.
+pub fn build_afs_report<S: SectorSource>(fs: &mut AfsFs<S>) -> Result<DiscReport> {
+    let level = fs.info.level;
+    let disc_name = Some(fs.info.title.clone());
+    let disc_size = match level {
+        AfsLevel::Level2 => Some(fs.info.sectors_per_side as u64 * 2 * 256),
+        AfsLevel::Level3 => Some(fs.info.total_sectors as u64 * 256),
+    };
+
+    let root = fs.root()?;
+    let root_list = fs.list_with_parent(&root, root.sin)?;
+    let (broken_directories, directory_warnings) = collect_fs_health(fs);
+
+    Ok(DiscReport {
+        filesystem: level.as_str(),
+        map_type: match level {
+            AfsLevel::Level2 => "allocation-map",
+            AfsLevel::Level3 => "jesmap",
+        },
+        dir_type: "sequential",
+        disc_name,
+        disc_id: None,
+        disc_size,
+        sector_size: Some(256),
+        boot_option: None,
+        root_title: root_list.title,
+        boot_block_present: false,
+        boot_block_checksum_ok: None,
+        zone_checksum_ok_count: None,
+        zone_checksum_total: None,
+        cross_check_ok: None,
+        root_check_byte_ok: !root_list.is_broken,
+        broken_directories,
+        directory_warnings,
+    })
+}
+
+/// Generic best-effort tree health walk over any `FileSystem` backend (used by
+/// the AFS report, which has no FileCore-specific volume checks). Collects the
+/// RISC OS path of any broken directory plus non-fatal warnings, guarding
+/// against directory cycles with an extent fingerprint set.
+fn collect_fs_health<FS: FileSystem>(fs: &mut FS) -> (Vec<String>, Vec<String>) {
+    use std::collections::HashSet;
+
+    let mut broken = Vec::new();
+    let mut warnings = Vec::new();
+    let Ok(root) = fs.root() else {
+        return (broken, warnings);
+    };
+    let root_sin = root.sin;
+    let mut stack = vec![(root, "$".to_string(), root_sin)];
+    let mut visited: HashSet<Vec<(u64, u64)>> = HashSet::new();
+
+    while let Some((dir_obj, path, parent_sin)) = stack.pop() {
+        let fingerprint: Vec<(u64, u64)> = dir_obj
+            .extents
+            .iter()
+            .map(|e| (e.disc_addr, e.len))
+            .collect();
+        if !fingerprint.is_empty() && !visited.insert(fingerprint) {
+            continue;
+        }
+        let Ok(listing) = fs.list_with_parent(&dir_obj, parent_sin) else {
+            broken.push(path.clone());
+            continue;
+        };
+        if listing.is_broken {
+            broken.push(path.clone());
+        }
+        for w in &listing.warnings {
+            warnings.push(format!("{path}: {w}"));
+        }
+        for obj in listing.objects {
+            let child_path = format!("{path}.{}", obj.name);
+            if obj.is_directory {
+                stack.push((obj, child_path, dir_obj.sin));
+            }
+        }
+    }
+    (broken, warnings)
 }
 
 impl DiscReport {
