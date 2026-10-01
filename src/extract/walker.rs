@@ -272,7 +272,7 @@ fn extract_file<FS: FileSystem>(
         let crc = hasher.finalize();
         let le = obj.load_exec();
         let fields = InfFields {
-            riscos_name: &obj.name,
+            name_bytes: &obj.name_bytes,
             load: obj.load,
             exec: obj.exec,
             length: written,

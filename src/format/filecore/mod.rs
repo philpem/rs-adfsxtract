@@ -221,6 +221,7 @@ impl<S: SectorSource> FileSystem for FileCoreFs<S> {
         };
         Ok(Object {
             name: "$".to_string(),
+            name_bytes: b"$".to_vec(),
             load: 0,
             exec: 0,
             length: 0,

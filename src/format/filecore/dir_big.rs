@@ -146,7 +146,7 @@ pub fn decode_big_dir(
                 anomalies.push(format!("entry {i}: name heap offset out of range"));
                 (String::new(), Vec::new())
             };
-            collation_names.push(coll_bytes);
+            collation_names.push(coll_bytes.clone());
 
             let is_directory = attrs & ATTR_DIRECTORY != 0;
             if !is_directory && length == 0 && (sin_raw >> 8) != 0 {
@@ -186,6 +186,7 @@ pub fn decode_big_dir(
 
             objects.push(Object {
                 name,
+                name_bytes: coll_bytes,
                 load,
                 exec,
                 length,

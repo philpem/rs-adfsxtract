@@ -24,7 +24,15 @@ pub const ATTR_PUBLIC_WRITE: u32 = 1 << 5;
 /// allocation map (old-map contiguous run, or new-map fragment list).
 #[derive(Debug, Clone)]
 pub struct Object {
+    /// Decoded (Unicode) display name, used for host-filesystem naming and
+    /// reporting.
     pub name: String,
+    /// The logical RISC OS name as raw bytes (post S/M/L top-bit masking,
+    /// terminator stripped, before `charset::decode`). Carried so the `.inf`
+    /// sidecar can percent-encode the original byte sequence exactly as DIM's
+    /// `CreateINFFile` does, rather than the UTF-8 bytes of the decoded name
+    /// (high-bit 0x80-0xFF characters would otherwise not round-trip).
+    pub name_bytes: Vec<u8>,
     pub load: u32,
     pub exec: u32,
     pub length: u64,

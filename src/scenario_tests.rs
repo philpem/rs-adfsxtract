@@ -68,6 +68,29 @@ fn riscos_charset_high_byte_name_end_to_end() {
 }
 
 #[test]
+fn high_byte_name_inf_encodes_raw_riscos_bytes() {
+    let cfg = NewMapConfig::default();
+    // 'é' (U+00E9) encodes to a single RISC OS byte 0xE9. The .inf sidecar
+    // must record that raw byte as %E9, not the two-byte UTF-8 sequence
+    // ("Caf%C3%A9File") that encoding the *decoded* string would produce.
+    let name = "Caf\u{E9}File";
+    let image = build_new_map_disc(vec![SynthEntry::File(SynthFile::plain(name, b"x"))], &cfg);
+    let mut fs = FileCoreFs::open(image.cursor()).unwrap();
+    let dir = tempdir().unwrap();
+    let mut opts = default_opts(dir.path());
+    opts.write_inf = true;
+    let mut log = ExtractionLog::default();
+    walk_and_extract(&mut fs, &opts, &mut log).unwrap();
+
+    let inf_path = dir.path().join(format!("{name}.inf"));
+    let inf_content = std::fs::read_to_string(&inf_path).unwrap();
+    assert!(
+        inf_content.starts_with("\"Caf%E9File\" "),
+        "inf must encode raw byte 0xE9, not UTF-8: {inf_content}"
+    );
+}
+
+#[test]
 fn typed_file_gets_suffix_plain_file_does_not() {
     let cfg = NewMapConfig::default();
     let image = build_new_map_disc(
