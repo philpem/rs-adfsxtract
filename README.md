@@ -119,6 +119,18 @@ recovered file inventories diverge. Because the other reader is *independent*
 (a different author and parse path), a divergence is genuine cross-validation
 rather than the self-confirming builder round-trip; on a divergence it dumps
 both readers' raw readings so a cell can be adjudicated rather than assumed.
+It also wraps the other reader in a panic guard, so a `debug_assert!`-style
+rejection is reported as adjudication instead of taking the harness down.
+
+The synthetic new-map generator was corrected in the same work so that its
+allocation-map bit-length exactly matches the disc's allocation-unit count
+(and fragments occupy whole sectors): the previous sizing left the free-space
+map inconsistent, which a strict validating reader notices even though this
+one never did. The generator matrix is now produced with 1024-byte sectors and
+the allocation unit equal to the sector size, which is the geometry the other
+reader accepts, so its generated `E` disc — not just the committed real-media
+fixture — cross-validates against the independent reader.
+
 It requires fetching the git dependency, so it is feature-gated:
 
 ```sh

@@ -130,14 +130,31 @@ fn own_reading(bytes: &[u8]) -> Option<OurReading> {
 }
 
 /// Try the independent reader. It currently only implements new-map Format E,
-/// so any other image is reported as not-handled rather than a failure.
+/// so any other image is reported as not-handled rather than a failure. It is
+/// wrapped in `catch_unwind` because a strict reader may `debug_assert!` (in a
+/// debug build) on an image that does not meet its assumptions (e.g. a
+/// fragment not spanning whole sectors); a panic must never take the whole
+/// harness down, it is reported as adjudication like any other rejection.
 fn their_reading(bytes: &[u8]) -> TheirReading {
-    let disk = match FormatE::parse(bytes) {
-        Ok(d) => d,
-        Err(e) => {
+    let disk = match std::panic::catch_unwind(|| FormatE::parse(bytes)) {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
             return TheirReading {
                 parsed: false,
                 note: format!("rejected by the new-map reader ({})", root_cause(&e)),
+                map_json: None,
+                files: Vec::new(),
+            };
+        }
+        Err(panic) => {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic".into());
+            return TheirReading {
+                parsed: false,
+                note: format!("panicked in the new-map reader ({msg})"),
                 map_json: None,
                 files: Vec::new(),
             };
@@ -305,7 +322,14 @@ fn differential_generator_matrix() {
     use acornfsextract::testutil::*;
 
     eprintln!("== Differential harness (synthetic generator matrix) ==");
-    let cfg = NewMapConfig::default();
+    // The other reader (acorn-dfs) only accepts new-map discs with
+    // 256/512/1024/2048-byte sectors (log2 8..11) and asserts that every
+    // fragment is a whole sector, so the new-map synthetics are generated with
+    // 1024-byte sectors and the allocation unit equal to the sector size
+    // (log2_bpmb == log2_sec_size == 10). This lets both readers agree on the
+    // generated image, which is the point of the harness: proving the
+    // generator's output is independently valid, not self-confirming.
+    let cfg = NewMapConfig { log2_sector_size: 10, log2_bpmb: 10, ..NewMapConfig::default() };
     let mut images: Vec<(String, Vec<u8>)> = Vec::new();
 
     let img = build_new_map_disc(
@@ -320,7 +344,12 @@ fn differential_generator_matrix() {
     );
     images.push(("synthetic:newmap-small-dir-E".into(), img.bytes));
 
-    let cfg_big = NewMapConfig { big_dirs: true, ..NewMapConfig::default() };
+    let cfg_big = NewMapConfig {
+        log2_sector_size: 10,
+        log2_bpmb: 10,
+        big_dirs: true,
+        ..NewMapConfig::default()
+    };
     let img = build_new_map_disc(
         vec![SynthEntry::File(SynthFile::plain("big.txt", b"in a big directory"))],
         &cfg_big,
