@@ -37,13 +37,57 @@ pub fn network_disabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Returns the disc bytes, or `None` only when network is disabled **and** the
-/// file is not already cached (the caller skips that entry). With network
-/// enabled, a missing file is downloaded (extracting the member from a zip if
-/// necessary) and written to `cache`/`label` before being returned.
+/// Whether a real_media bundle ZIP is the approved source for every image.
+/// The GitHub Actions workflow downloads a single bundle (hosted on the
+/// maintainer's site) rather than polling each forum/mirror, so CI only ever
+/// makes one network request.
+///
+/// If a `real-media.zip` is present in the cache its members are extracted
+/// once (see [`ensure_bundle_extracted`]); local development still falls back
+/// to per-source fetching when the bundle is absent.
+pub fn ensure_bundle_extracted(cache: &Path) -> bool {
+    let zip_path = cache.join("real-media.zip");
+    if !zip_path.exists() {
+        return false;
+    }
+    let marker = cache.join(".bundle_extracted");
+    if marker.exists() {
+        return true;
+    }
+    let ok = (|| -> std::option::Option<()> {
+        let f = std::fs::File::open(&zip_path).ok()?;
+        let mut za = zip::ZipArchive::new(f).ok()?;
+        for i in 0..za.len() {
+            let name = za.name_for_index(i).unwrap_or("").to_owned();
+            if name.is_empty() || name.ends_with('/') {
+                continue;
+            }
+            let mut out = Vec::new();
+            za.by_index(i).unwrap().read_to_end(&mut out).ok()?;
+            let _ = std::fs::write(cache.join(&name), &out);
+        }
+        Some(())
+    })()
+    .is_some();
+    if ok {
+        let _ = std::fs::write(&marker, b"1");
+    }
+    ok
+}
+
+/// Returns the disc bytes, or `None` only when network is disabled (CI) and
+/// the file is not available from the cache or bundle - the caller silently
+/// skips that entry. With network enabled, a missing file is fetched per
+/// source and written to `cache`/`label` before being returned.
 pub fn obtain(spec: &Spec, cache: &Path) -> Option<Vec<u8>> {
     let path = cache.join(spec.label);
     if let Ok(bytes) = std::fs::read(&path) {
+        return Some(bytes);
+    }
+    // Prefer extracting from the approved bundle ZIP over any per-source fetch.
+    if ensure_bundle_extracted(cache)
+        && let Ok(bytes) = std::fs::read(&path)
+    {
         return Some(bytes);
     }
     if network_disabled() {

@@ -107,10 +107,38 @@ ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_real_afs_images
 ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
 ```
 
-`ACORNFS_EXTERNAL_SOURCE` is a directory used as the cache. The GitHub Actions
-workflow sets `ACORNFS_CI=1` so CI never polls these sources; it only
-validates whatever is already in the cache and prints download instructions
-(without failing) for anything absent, keeping a bare `cargo test` network-free.
+`ACORNFS_EXTERNAL_SOURCE` is a directory used as the cache.
+
+## Real-media bundle for CI
+
+CI should not poll each forum/mirror (Stardot requires a login and is
+rate-limited). Instead the workflow downloads a **single bundle ZIP** that the
+maintainer hosts, and validates every contained image against its pinned
+SHA-256. Nothing is fetched per source in CI.
+
+To (re)generate the bundle locally:
+
+```sh
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_real_afs_images
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
+cd /tmp/cache && zip real-media.zip ./*    # then upload real-media.zip
+```
+
+Set the repo secret **`REAL_MEDIA_URL`** to the bundle's download URL. While
+that secret is unset the real-media job is a no-op (it compiles and the
+harness is skipped). `ACORNFS_CI=1` (set by the workflow) disables the
+per-source fetch; if the bundle is absent the entry is skipped silently.
+
+### Locking the bundle to GitHub Actions runners
+
+The bundle URL is only fetched from CI, but the endpoint is public. To prevent
+casual downloads you can either:
+
+- Include a token/query parameter in `REAL_MEDIA_URL` (e.g. a signed or
+  `?token=...` URL), or
+- IP-allowlist GitHub Actions runner ranges on your server using the CIDRs
+  published at https://api.github.com/meta (the `actions` key), which is the
+  practical way to restrict to runners only.
 
 A broader opt-in sweep against any local corpus of real disc images (e.g. an
 archive under `/mnt/nfs`) opens and verifies every recognisable Acorn disc and

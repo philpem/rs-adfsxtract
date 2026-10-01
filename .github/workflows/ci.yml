@@ -73,15 +73,17 @@ jobs:
           fi
 
   # Real-media validation against genuine discs (ADFS/DFS and Acorn File Server
-  # Level 2/3 hybrids). CI must not poll the forums/mirrors, so ACORNFS_CI=1
-  # disables the network fetch: cached discs (from actions/cache) are validated,
-  # and anything not cached is silently skipped with download instructions.
+  # Level 2/3 hybrids). CI does not poll each forum/mirror: it downloads a
+  # single approved bundle ZIP (hosted by the maintainer) via the REAL_MEDIA_URL
+  # secret, caches it, and validates every contained image against its pinned
+  # SHA-256. If the secret is unset the job is a no-op.
   real-media:
     name: validate real discs
     runs-on: ubuntu-latest
     env:
       ACORNFS_EXTERNAL_SOURCE: ${{ github.workspace }}/.afscache
       ACORNFS_CI: "1"
+      REAL_MEDIA_URL: ${{ secrets.REAL_MEDIA_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -93,6 +95,15 @@ jobs:
           key: afscache-${{ hashFiles('src/afs_real_media_tests.rs', 'src/external_real_media_tests.rs') }}
           restore-keys: |
             afscache-
+      - name: Fetch approved real-media bundle
+        run: |
+          if [ -n "$REAL_MEDIA_URL" ]; then
+            mkdir -p .afscache
+            curl -fsSL -A "acornfsextract-test" "$REAL_MEDIA_URL" -o .afscache/real-media.zip
+            echo "downloaded real-media bundle"
+          else
+            echo "REAL_MEDIA_URL secret not set; skipping real-media validation"
+          fi
       - name: Validate real AFS discs
         run: cargo test --lib validates_real_afs_images
       - name: Validate additional real discs

@@ -13,7 +13,7 @@ use crate::diagnostics::Diagnostics;
 use crate::extract::report::{build_dfs_report, build_report};
 use crate::format::dfs::DfsFs;
 use crate::format::filecore::FileCoreFs;
-use crate::real_media_common::{Spec, instruction, obtain, sha256_hex};
+use crate::real_media_common::{Spec, obtain, sha256_hex};
 use crate::verify::{verify, verify_filecore_volume};
 
 struct FetchSpec {
@@ -127,14 +127,12 @@ fn validates_additional_real_discs() {
     };
     let cache = PathBuf::from(cache);
 
-    let mut missing = 0usize;
     for entry in MANIFEST {
-        let bytes = match obtain(&entry.spec, &cache) {
-            Some(b) => b,
-            None => {
-                missing += 1;
-                continue;
-            }
+        // Returns None only when CI (network disabled) and the image is not in
+        // the cache/bundle - skipped silently; local fetch failures are
+        // reported inside obtain().
+        let Some(bytes) = obtain(&entry.spec, &cache) else {
+            continue;
         };
         let actual = sha256_hex(&bytes);
         assert_eq!(
@@ -180,15 +178,5 @@ fn validates_additional_real_discs() {
             "{} did not parse as FileCore or DFS",
             entry.spec.label
         );
-    }
-
-    if missing > 0 {
-        eprintln!(
-            "{missing} additional real disc(s) not present in {}; run locally with network to fetch, or:",
-            cache.display()
-        );
-        for entry in MANIFEST {
-            eprintln!("  - {}", instruction(&entry.spec, &cache));
-        }
     }
 }
