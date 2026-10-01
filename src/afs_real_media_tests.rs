@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::diagnostics::Diagnostics;
 use crate::format::afs::AfsFs;
-use crate::real_media_common::{Spec, obtain, sha256_hex};
+use crate::real_media_common::{Spec, obtain_disc, sha256_hex};
 use crate::verify::verify;
 
 struct FetchSpec {
@@ -54,10 +54,9 @@ fn validates_real_afs_images() {
     let cache = PathBuf::from(cache);
 
     for entry in MANIFEST {
-        // Returns None only when CI (network disabled) and the image is not in
-        // the cache/bundle - skipped silently; local fetch failures are
-        // reported inside obtain().
-        let Some(bytes) = obtain(&entry.spec, &cache) else {
+        // Prints the disc description, panics if the bundle is missing the disc
+        // (CI), or returns None for a non-fatal local fetch failure (skip).
+        let Some(bytes) = obtain_disc(&entry.spec, &cache, entry.expected) else {
             continue;
         };
         let actual = sha256_hex(&bytes);
@@ -74,15 +73,14 @@ fn validates_real_afs_images() {
         let mut diag = Diagnostics::default();
         let report = verify(&mut fs, &mut diag).unwrap();
         eprintln!(
-            "{}: level={} interleave={:?} name={:?} dirs={} files={} unreadable={} (expected: {})",
+            "{}: level={} interleave={:?} name={:?} dirs={} files={} unreadable={}",
             entry.spec.label,
             fs.info.level.as_str(),
             fs.interleave(),
             fs.info.title,
             report.directories,
             report.files,
-            report.unreadable,
-            entry.expected
+            report.unreadable
         );
         assert!(
             report.files > 0,

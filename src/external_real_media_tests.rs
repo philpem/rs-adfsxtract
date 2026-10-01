@@ -13,7 +13,7 @@ use crate::diagnostics::Diagnostics;
 use crate::extract::report::{build_dfs_report, build_report};
 use crate::format::dfs::DfsFs;
 use crate::format::filecore::FileCoreFs;
-use crate::real_media_common::{Spec, obtain, sha256_hex};
+use crate::real_media_common::{Spec, obtain_disc, sha256_hex};
 use crate::verify::{verify, verify_filecore_volume};
 
 struct FetchSpec {
@@ -128,10 +128,9 @@ fn validates_additional_real_discs() {
     let cache = PathBuf::from(cache);
 
     for entry in MANIFEST {
-        // Returns None only when CI (network disabled) and the image is not in
-        // the cache/bundle - skipped silently; local fetch failures are
-        // reported inside obtain().
-        let Some(bytes) = obtain(&entry.spec, &cache) else {
+        // Prints the disc description, panics if the bundle is missing the disc
+        // (CI), or returns None for a non-fatal local fetch failure (skip).
+        let Some(bytes) = obtain_disc(&entry.spec, &cache, entry.expected) else {
             continue;
         };
         let actual = sha256_hex(&bytes);
@@ -150,26 +149,21 @@ fn validates_additional_real_discs() {
             let _ = verify_filecore_volume(&fs, &mut diag);
             let v = verify(&mut fs, &mut diag).unwrap();
             eprintln!(
-                "{}: FileCore map={} dir={} name={:?} size={:?} unreadable={} (expected: {})",
+                "{}: FileCore map={} dir={} name={:?} size={:?} unreadable={}",
                 entry.spec.label,
                 report.map_type,
                 report.dir_type,
                 report.disc_name,
                 report.disc_size,
-                v.unreadable,
-                entry.expected
+                v.unreadable
             );
             parsed = true;
         }
         if let Ok(mut fs) = DfsFs::open(std::io::Cursor::new(bytes)) {
             let report = build_dfs_report(&mut fs).unwrap();
             eprintln!(
-                "{}: DFS name={:?} size={:?} double={} (expected: {})",
-                entry.spec.label,
-                report.disc_name,
-                report.disc_size,
-                fs.double_sided,
-                entry.expected
+                "{}: DFS name={:?} size={:?} double={}",
+                entry.spec.label, report.disc_name, report.disc_size, fs.double_sided
             );
             parsed = true;
         }

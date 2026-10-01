@@ -43,18 +43,18 @@ pub fn network_disabled() -> bool {
 /// makes one network request.
 ///
 /// If a `real-media.zip` is present in the cache its members are extracted
-/// once (see [`ensure_bundle_extracted`]); local development still falls back
-/// to per-source fetching when the bundle is absent.
+/// (see [`ensure_bundle_extracted`]); local development still falls back to
+/// per-source fetching when the bundle is absent.
 pub fn ensure_bundle_extracted(cache: &Path) -> bool {
     let zip_path = cache.join("real-media.zip");
     if !zip_path.exists() {
         return false;
     }
-    let marker = cache.join(".bundle_extracted");
-    if marker.exists() {
-        return true;
-    }
-    let ok = (|| -> std::option::Option<()> {
+    // Always re-extract (idempotent overwrite). The workflow re-downloads the
+    // bundle fresh each run, so the stale `.bundle_extracted` marker that a
+    // persisted cache used to smuggle in is gone - a changed bundle is always
+    // unpacked rather than silently skipped.
+    (|| -> std::option::Option<()> {
         let f = std::fs::File::open(&zip_path).ok()?;
         let mut za = zip::ZipArchive::new(f).ok()?;
         for i in 0..za.len() {
@@ -68,11 +68,16 @@ pub fn ensure_bundle_extracted(cache: &Path) -> bool {
         }
         Some(())
     })()
-    .is_some();
-    if ok {
-        let _ = std::fs::write(&marker, b"1");
-    }
-    ok
+    .is_some()
+}
+
+/// Extract the bundle at most once per process (see [`ensure_bundle_extracted`]);
+/// a no-op when no bundle is present.
+fn extract_bundle_once(cache: &Path) {
+    static EXTRACTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    EXTRACTED.get_or_init(|| {
+        let _ = ensure_bundle_extracted(cache);
+    });
 }
 
 /// Returns the disc bytes, or `None` only when network is disabled (CI) and
@@ -80,14 +85,13 @@ pub fn ensure_bundle_extracted(cache: &Path) -> bool {
 /// skips that entry. With network enabled, a missing file is fetched per
 /// source and written to `cache`/`label` before being returned.
 pub fn obtain(spec: &Spec, cache: &Path) -> Option<Vec<u8>> {
+    // If the hosted bundle is present, unpack it before any lookup so its
+    // members always take precedence over (and overwrite) stale files from a
+    // reused cache directory. Gated to once per process.
+    extract_bundle_once(cache);
+
     let path = cache.join(spec.label);
     if let Ok(bytes) = std::fs::read(&path) {
-        return Some(bytes);
-    }
-    // Prefer extracting from the approved bundle ZIP over any per-source fetch.
-    if ensure_bundle_extracted(cache)
-        && let Ok(bytes) = std::fs::read(&path)
-    {
         return Some(bytes);
     }
     if network_disabled() {
@@ -108,6 +112,29 @@ pub fn obtain(spec: &Spec, cache: &Path) -> Option<Vec<u8>> {
     let _ = std::fs::create_dir_all(cache);
     let _ = std::fs::write(&path, &bytes);
     Some(bytes)
+}
+
+/// Obtain a disc, printing its human-readable description so the workflow log
+/// shows what is being validated. Under CI (network disabled) a disc that is
+/// not present in the real-media bundle is **fatal**: the bundle is incomplete
+/// and the job must fail. Locally a failed fetch is non-fatal - it is logged
+/// and `None` is returned so the caller can skip that entry.
+pub fn obtain_disc(spec: &Spec, cache: &Path, description: &str) -> Option<Vec<u8>> {
+    eprintln!("validating {}", spec.label);
+    eprintln!("  {}", description);
+    let bytes = obtain(spec, cache);
+    if bytes.is_some() {
+        return bytes;
+    }
+    if network_disabled() {
+        panic!(
+            "{}: disc is not present in the hosted real-media bundle (ACORNFS_EXTERNAL_SOURCE={}); regenerate real-media.zip",
+            spec.label,
+            cache.display()
+        );
+    }
+    eprintln!("  skipping: could not obtain (see manual-download instruction above)");
+    None
 }
 
 fn fetch(spec: &Spec) -> std::result::Result<Vec<u8>, String> {
