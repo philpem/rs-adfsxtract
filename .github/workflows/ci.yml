@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Core gate: formatting, lints and the always-on (no-network) test suite.
+  # This is the only job that does not need network egress.
+  gate:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Test (always-on suite)
+        run: cargo test
+
+  # Differential harness: cross-validate our reader against the independent
+  # ejmount/acorn-dfs reader. Fetches a git dependency (network) and is
+  # adjudicate/report-only, so it is informational rather than a hard gate.
+  differential:
+    name: differential harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: diff-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            diff-${{ runner.os }}-
+      - name: Differential harness (report-only)
+        run: cargo test --features differential
+
+  # Real-media validation: downloads hash-pinned genuine discs (ADFS/DFS and
+  # Acorn File Server Level 2/3 hybrids) at runtime and verifies extraction.
+  # Requires network; self-skips (along with the rest of the suite) for CI
+  # runs that do not set the var, so its absence cannot break the gate job.
+  real-media:
+    name: validate real discs
+    runs-on: ubuntu-latest
+    env:
+      ACORNFS_EXTERNAL_SOURCE: ${{ github.workspace }}/.afscache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache downloaded discs
+        uses: actions/cache@v4
+        with:
+          path: .afscache
+          key: afscache-${{ hashFiles('src/afs_real_media_tests.rs', 'src/external_real_media_tests.rs') }}
+          restore-keys: |
+            afscache-
+      - name: Validate real AFS discs
+        run: cargo test --lib validates_real_afs_images
+      - name: Validate additional real discs
+        run: cargo test --lib validates_additional_real_discs

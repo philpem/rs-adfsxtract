@@ -209,8 +209,10 @@ fn fetch_or_cache(spec: &FetchSpec, cache: &std::path::Path) -> Vec<u8> {
     if let Ok(bytes) = std::fs::read(&cached) {
         return bytes;
     }
-    // Download the (zip) archive into memory.
+    // Download the (zip) archive into memory. Some mirrors (notably
+    // stardot.org.uk) reject default fetch agents, so send an identifying UA.
     let resp = ureq::get(spec.url)
+        .set("User-Agent", "acornfsextract-test")
         .call()
         .unwrap_or_else(|e| panic!("GET {}: {e}", spec.url));
     let mut archive = Vec::new();
