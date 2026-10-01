@@ -54,6 +54,11 @@ FileCore and AFS are both signature/structurally-detected and always
 attempted; DFS - which has no magic number, only structural plausibility -
 is only tried as a final fallback.
 
+Note that the `--format json` output for `info`/`verify`/`extract` is always
+a **list** (one element per partition), even for a single-volume image, so
+tooling should not expect a bare object.
+
+
 
 ## Tests
 

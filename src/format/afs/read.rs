@@ -95,10 +95,26 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Whether `year` is a leap year (Gregorian).
+fn is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Number of days in `month` of `year` (Gregorian), for month 1-12.
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
 /// Decodes an AFS filing-system date (the standard 2-byte date format: day in
 /// bits 0-4 of byte 0, month in bits 0-3 of byte 1 and the (year-1981) spread
 /// across the remaining bits) into Unix seconds. Returns `None` for an
-/// out-of-range month/day.
+/// out-of-range or impossible calendar date (e.g. 31 February, month 13).
 pub fn decode_afs_date(date: u16) -> Option<i64> {
     let byte0 = (date & 0xFF) as u8;
     let byte1 = ((date >> 8) & 0xFF) as u8;
@@ -107,7 +123,10 @@ pub fn decode_afs_date(date: u16) -> Option<i64> {
     let month = (byte1 & 0x0F) as u32;
     let year_lo = (byte1 >> 4) & 0x0F;
     let year = 1981i64 + (year_hi << 4) as i64 + year_lo as i64;
-    if month == 0 || month > 12 || day == 0 || day > 31 {
+    if month == 0 || month > 12 || day == 0 {
+        return None;
+    }
+    if day > days_in_month(year, month) {
         return None;
     }
     Some(days_from_civil(year, month, day) * 86400)
@@ -312,6 +331,11 @@ mod tests {
         assert!(date.unwrap() > 0); // post-1970
         // Month 0 is impossible -> None.
         assert!(decode_afs_date(0x00_05).is_none());
+        // 31 February is impossible -> None.
+        assert!(decode_afs_date(0x1F_02).is_none());
+        // 29 February 2000 is valid (leap year).
+        // 2000: year-1981=19, day=29, month=2 -> byte0=0x3D, byte1=0x32.
+        assert!(decode_afs_date(0x32_3D).is_some());
     }
 
     #[test]
