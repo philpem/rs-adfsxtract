@@ -45,3 +45,6 @@ mod external_real_media_tests;
 
 #[cfg(test)]
 mod afs_real_media_tests;
+
+#[cfg(test)]
+mod real_media_common;

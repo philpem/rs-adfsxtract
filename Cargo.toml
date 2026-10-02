@@ -26,3 +26,4 @@ flate2 = "1.0"
 ureq = { version = "2", features = ["json"] }
 ruzstd = "0.7"
 zip = "2"
+sha2 = "0.10"

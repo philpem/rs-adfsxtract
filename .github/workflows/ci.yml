@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  # Push to the default branch only; PRs are handled by `pull_request`, so this
+  # avoids running twice when a commit is pushed to a PR feature branch.
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # Core gate: formatting, lints and the always-on (no-network) test suite.
+  # This is the only job that does not need network egress.
+  gate:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Test (always-on suite)
+        run: cargo test
+
+  # Differential harness: cross-validate our reader against the independent
+  # ejmount/acorn-dfs reader. Fetches a git dependency (network) and is
+  # adjudicate/report-only, so it is informational rather than a hard gate.
+  differential:
+    name: differential harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: diff-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            diff-${{ runner.os }}-
+      # The differential feature/harness only exists once philpem/rs-adfsxtract#5
+      # lands; until then this job is skipped (green), and it becomes a real
+      # cross-validation once the feature is present.
+      - name: Differential harness (report-only)
+        run: |
+          if grep -q 'differential = \[' Cargo.toml; then
+            cargo test --features differential
+          else
+            echo "differential feature not present on this branch (PR #5 pending); skipping"
+          fi
+
+  # Real-media validation against genuine discs (ADFS/DFS and Acorn File Server
+  # Level 2/3 hybrids). CI does not poll each forum/mirror: it downloads a
+  # single approved bundle ZIP (hosted by the maintainer) via the REAL_MEDIA_URL
+  # secret, extracts it fresh into the workspace, and validates every contained
+  # image against its pinned SHA-256. If the secret is unset the job is a no-op.
+  real-media:
+    name: validate real discs
+    runs-on: ubuntu-latest
+    env:
+      ACORNFS_EXTERNAL_SOURCE: ${{ github.workspace }}/.afscache
+      ACORNFS_CI: "1"
+      REAL_MEDIA_URL: ${{ secrets.REAL_MEDIA_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Fetch approved real-media bundle
+        run: |
+          if [ -n "$REAL_MEDIA_URL" ]; then
+            mkdir -p .afscache
+            curl -fsSL -A "acornfsextract-test" "$REAL_MEDIA_URL" -o .afscache/real-media.zip
+            echo "downloaded real-media bundle"
+          else
+            echo "REAL_MEDIA_URL secret not set; skipping real-media validation"
+          fi
+      - name: Validate real AFS discs
+        run: cargo test --lib validates_real_afs_images -- --nocapture
+      - name: Validate additional real discs
+        run: cargo test --lib validates_additional_real_discs -- --nocapture

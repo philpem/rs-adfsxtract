@@ -95,13 +95,50 @@ Configurable via `ACORNFS_ARCOLOGY_API` (base URL), `ACORNFS_ARCOLOGY_MAX`
 (sample size), `ACORNFS_ARCOLOGY_EXT` (extensions to sample) and
 `ACORNFS_ARCOLOGY_MAXSIZE` (skip larger artefacts).
 
-Separately, an opt-in target validates additional pinned real discs fetched
-from 8bs.com and mdfs.net (URL + SHA-256, self-skips unless a cache dir is
-given):
+Separately, opt-in targets validate additional pinned real discs (Acorn File
+Server Level 2/3 + hybrids, plus ADFS/DFS media from 8bs.com, mdfs.net,
+bbcmicro.co.uk and Stardot). Locally they fetch each disc from its source and
+cache it; the files are never bundled:
 
 ```sh
+# Local: fetches (or reads from the cache) and validates, with the SHA-256
+# checked against the pinned manifest.
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_real_afs_images
 ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
 ```
+
+`ACORNFS_EXTERNAL_SOURCE` is a directory used as the cache.
+
+## Real-media bundle for CI
+
+CI should not poll each forum/mirror (Stardot requires a login and is
+rate-limited). Instead the workflow downloads a **single bundle ZIP** that the
+maintainer hosts, and validates every contained image against its pinned
+SHA-256. Nothing is fetched per source in CI.
+
+To (re)generate the bundle locally:
+
+```sh
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_real_afs_images
+ACORNFS_EXTERNAL_SOURCE=/tmp/cache cargo test --lib validates_additional_real_discs
+cd /tmp/cache && zip real-media.zip ./*    # then upload real-media.zip
+```
+
+Set the repo secret **`REAL_MEDIA_URL`** to the bundle's download URL. While
+that secret is unset the real-media job is a no-op (it compiles and the
+harness is skipped). `ACORNFS_CI=1` (set by the workflow) disables the
+per-source fetch; if the bundle is absent the entry is skipped silently.
+
+### Locking the bundle to GitHub Actions runners
+
+The bundle URL is only fetched from CI, but the endpoint is public. To prevent
+casual downloads you can either:
+
+- Include a token/query parameter in `REAL_MEDIA_URL` (e.g. a signed or
+  `?token=...` URL), or
+- IP-allowlist GitHub Actions runner ranges on your server using the CIDRs
+  published at https://api.github.com/meta (the `actions` key), which is the
+  practical way to restrict to runners only.
 
 A broader opt-in sweep against any local corpus of real disc images (e.g. an
 archive under `/mnt/nfs`) opens and verifies every recognisable Acorn disc and
